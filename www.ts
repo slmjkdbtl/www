@@ -8,10 +8,10 @@ import * as path from "path"
 
 export const isDev = Boolean(Bun.env["DEV"])
 
-export type Handler = (req: Request) => Response | void
-export type MatchHandler = (req: Request, match?: Record<string, string>) => Response | void
-export type ErrorHandler = (req: Request, err: Error) => Response
-export type NotFoundHandler = (req: Request) => Response
+export type Handler = (req: Request) => Response | Promise<Response> | void
+export type MatchHandler = (req: Request, match?: Record<string, string>) => Response | Promise<Response> | void
+export type ErrorHandler = (req: Request, err: Error) => Response | Promise<Response>
+export type NotFoundHandler = (req: Request) => Response | Promise<Response>
 
 export function createServer() {
 
@@ -31,7 +31,7 @@ export function createServer() {
 		}
 	}
 
-	let handleNotFound = (req: Request) => new Response("404", { status: 404 })
+	let handleNotFound: NotFoundHandler = (req) => new Response("404", { status: 404 })
 
 	function handleMatch(req: Request, pat: string, handler: MatchHandler) {
 		const url = new URL(req.url)
@@ -198,21 +198,23 @@ export function matchPath(pat: string, url: string): Record<string, string> | nu
 
 }
 
+export type DB = ReturnType<typeof createDatabase>
+
 export type CreateDatabaseOpts = {
 	timeCreated?: boolean,
 	timeUpdated?: boolean,
-	init?: (db: ReturnType<typeof createDatabase>) => void,
+	init?: (db: DB) => void,
 	tables?: Record<string, Record<string, any>>,
 }
 
-type SQLVars = Record<string, string | number>
-type SQLData = Record<string, string | number>
-type WhereCondition = Record<string, string | { value: string, op: string }>
-type OrderCondition = {
+export type SQLVars = Record<string, string | number>
+export type SQLData = Record<string, string | number>
+export type WhereCondition = Record<string, string | { value: string, op: string }>
+export type OrderCondition = {
 	columns: string[],
 	desc?: boolean,
 }
-type LimitCondition = number
+export type LimitCondition = number
 
 export type SelectOpts = {
 	columns?: "*" | string[],
@@ -520,7 +522,7 @@ END
 const trimSlashes = (str: string) => str.replace(/\/*$/, "").replace(/^\/*/, "")
 const parentPath = (p: string, sep = "/") => p.split(sep).slice(0, -1).join(sep)
 
-const isFile = (path: string) => {
+function isFile(path: string) {
 	try {
 		return fs.statSync(path).isFile()
 	} catch {
@@ -528,7 +530,7 @@ const isFile = (path: string) => {
 	}
 }
 
-const isDir = (path: string) => {
+function isDir(path: string) {
 	try {
 		return fs.statSync(path).isDirectory()
 	} catch {
@@ -556,7 +558,6 @@ export const res = {
 			...(opts.headers ?? {}),
 		},
 	}),
-	// TODO: type
 	json: (content: any, opts: ResponseOpts = {}) => new Response(content, {
 		status: opts.status ?? 200,
 		headers: {
@@ -686,17 +687,19 @@ export type CSS = {
 	// https://www.typescriptlang.org/docs/handbook/2/objects.html#index-signatures
 	[name: string]: {
 		[name: string]: string | number | StyleSheetRecursive,
-	} | void,
+	},
+	// @ts-ignore
 	"@keyframes"?: {
 		[name: string]: Record<string, StyleSheet>,
 	},
+	// @ts-ignore
+	"@font-face"?: StyleSheet[],
 }
 
 export type CSSOpts = {
 	readable?: boolean,
 }
 
-// TODO: @font-face
 // sass-like css preprocessor
 export function css(list: CSS, opts: CSSOpts = {}) {
 
@@ -758,16 +761,21 @@ export function css(list: CSS, opts: CSSOpts = {}) {
 	// deal with @keyframes
 	for (const sel in list) {
 		if (sel === "@keyframes") {
-			const sheet = list[sel] as CSS["@keyframes"]
+			const sheet = list[sel] as CSS["@keyframes"] ?? {}
 			for (const name in sheet) {
 				const map = sheet[name]
-				code += id() + `@keyframes ${name} {` + nl
+				code += `@keyframes ${name} {` + nl
 				lv++
 				for (const time in map) {
 					code += id() + time + " " + handleSheet(map[time])
 				}
 				lv--
-				code += id() + "}" + nl
+				code += "}" + nl
+			}
+		} else if (sel === "@font-face") {
+			const fonts = list[sel] as CSS["@font-face"] ?? []
+			for (const font of fonts) {
+				code += "@font-face " + handleSheet(font)
 			}
 		} else {
 			code += handleSheetRecursive(sel, list[sel] as StyleSheetRecursive)
@@ -879,6 +887,28 @@ export function csslib(opt: CSSLibOpts = {}) {
 
 }
 
+// TODO: not global?
+const buildCache: Record<string, string> = {}
+
+export async function js(file: string) {
+	if (!isDev) {
+		if (buildCache[file]) {
+			return Promise.resolve(buildCache[file])
+		}
+	}
+	const res = await Bun.build({
+		entrypoints: [file],
+	})
+	if (res.outputs.length !== 1) {
+		throw new Error("Failed to build")
+	}
+	const code = await res.outputs[0].text()
+	if (!isDev) {
+		buildCache[file] = code
+	}
+	return code
+}
+
 export type CronTime = number | "*"
 
 export function cron(
@@ -913,7 +943,7 @@ export function cron(
 	}
 }
 
-function exec(cmd: string | string[], opts = {}) {
+export function exec(cmd: string | string[], opts: Parameters<typeof Bun.spawn>[1] = {}) {
 	return Bun.spawn(Array.isArray(cmd) ? cmd : cmd.split(" "), {
 		stdin: "inherit",
 		stdout: "inherit",
@@ -925,7 +955,7 @@ function exec(cmd: string | string[], opts = {}) {
 const cmds: Record<string, (...args: any[]) => void> = {
 	dev: () => {
 		exec("bun --watch main.ts", {
-			env: { ...process.env, "DEV": 1 },
+			env: { ...process.env, "DEV": "1" },
 		})
 	},
 	deploy: (host: string, dir: string, service: string) => {

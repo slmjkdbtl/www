@@ -22,6 +22,12 @@ console.log(css({
 			}
 		},
 	},
+	"@font-face": [
+		{
+			"font-family": "apl386",
+			"src": "url(/fonts/apl386.ttf)",
+		},
+	],
 	"@keyframes": {
 		"bounce": {
 			"from": {
