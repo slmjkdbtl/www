@@ -1,10 +1,11 @@
 // helpers for the world wide web with Bun
 // TODO: interactive console
-// TODO: analytics
 
-import { Database } from "bun:sqlite"
 import * as fs from "fs"
 import * as path from "path"
+import type { ServeOptions, SocketAddress } from "bun"
+import * as sqlite from "bun:sqlite"
+import type { Statement } from "bun:sqlite"
 
 export const isDev = Boolean(Bun.env["DEV"])
 
@@ -13,7 +14,47 @@ export type MatchHandler = (req: Request, match?: Record<string, string>) => Res
 export type ErrorHandler = (req: Request, err: Error) => Response | Promise<Response>
 export type NotFoundHandler = (req: Request) => Response | Promise<Response>
 
-export function createServer() {
+export type Server = {
+	// TODO: return an event controller
+	handle: (handler: Handler) => void,
+	error: (handler: ErrorHandler) => void,
+	notFound: (action: NotFoundHandler) => void,
+	match: (pat: string, handler: MatchHandler) => void,
+	get: (pat: string, handler: MatchHandler) => void,
+	post: (pat: string, handler: MatchHandler) => void,
+	put: (pat: string, handler: MatchHandler) => void,
+	delete: (pat: string, handler: MatchHandler) => void,
+	patch: (pat: string, handler: MatchHandler) => void,
+	files: (route: string, root: string) => void,
+	dir: (route: string, root: string) => void,
+	getIP: (req: Request) => SocketAddress | null,
+}
+
+// TODO: pass res object instead of returning?
+export function createServer(opts: Omit<ServeOptions, "fetch"> = {}): Server {
+
+	const server = Bun.serve({
+		...opts,
+		fetch: fetch,
+	})
+
+	async function fetch(req: Request) {
+		// TODO: better async?
+		for (const handle of handlers) {
+			try {
+				const res = handle(req)
+				if (res instanceof Promise) {
+					const awaitedRes = await res
+					if (awaitedRes) return awaitedRes
+				} else {
+					if (res) return res
+				}
+			} catch (e) {
+				return handleError(req, e as Error)
+			}
+		}
+		return handleNotFound(req)
+	}
 
 	const handlers: Handler[] = []
 	const handle = (handler: Handler) => handlers.push(handler)
@@ -48,33 +89,8 @@ export function createServer() {
 		}
 	}
 
-	async function fetch(req: Request) {
-		// TODO: better async?
-		for (const handle of handlers) {
-			try {
-				const res = handle(req)
-				if (res instanceof Promise) {
-					const awaitedRes = await res
-					if (awaitedRes) return awaitedRes
-				} else {
-					if (res) return res
-				}
-			} catch (e) {
-				return handleError(req, e as Error)
-			}
-		}
-		return handleNotFound(req)
-	}
-
 	return {
-		start: (port: number, hostname: string) => {
-			return Bun.serve({
-				port: port,
-				hostname: hostname,
-				fetch: fetch,
-			})
-		},
-		fetch: fetch,
+		getIP: (req: Request) => server.requestIP(req),
 		handle: handle,
 		error: (action: ErrorHandler) => handleError = action,
 		notFound: (action: NotFoundHandler) => handleNotFound = action,
@@ -170,6 +186,9 @@ export function createServer() {
 	}
 }
 
+const trimSlashes = (str: string) => str.replace(/\/*$/, "").replace(/^\/*/, "")
+const parentPath = (p: string, sep = "/") => p.split(sep).slice(0, -1).join(sep)
+
 export function matchPath(pat: string, url: string): Record<string, string> | null {
 
 	pat = pat.replace(/\/$/, "")
@@ -198,17 +217,34 @@ export function matchPath(pat: string, url: string): Record<string, string> | nu
 
 }
 
-export type DB = ReturnType<typeof createDatabase>
-
-export type CreateDatabaseOpts = {
-	timeCreated?: boolean,
-	timeUpdated?: boolean,
-	init?: (db: DB) => void,
-	tables?: Record<string, Record<string, any>>,
+export type ColumnDef = {
+	type: string,
+	primaryKey?: boolean,
+	autoIncrement?: boolean,
+	allowNull?: boolean,
+	unique?: boolean,
+	default?: string | number,
+	index?: boolean,
+	search?: boolean,
+	reference?: {
+		table: string,
+		column: string,
+	},
 }
 
-export type SQLVars = Record<string, string | number>
-export type SQLData = Record<string, string | number>
+export type TableDef = Record<string, ColumnDef>
+
+export type CreateDatabaseOpts = {
+	// TODO: move these to table def
+	timeCreated?: boolean,
+	timeUpdated?: boolean,
+	init?: (db: Database) => void,
+	tables?: Record<string, TableDef>,
+	wal?: boolean,
+}
+
+export type SQLVars = Record<string, string | number | boolean>
+export type SQLData = Record<string, string | number | boolean>
 export type WhereCondition = Record<string, string | { value: string, op: string }>
 export type OrderCondition = {
 	columns: string[],
@@ -224,31 +260,28 @@ export type SelectOpts = {
 	limit?: LimitCondition,
 }
 
-export type ColumnProps = {
-	type: string,
-	primaryKey?: boolean,
-	autoIncrement?: boolean,
-	allowNull?: boolean,
-	unique?: boolean,
-	default?: string | number,
-	index?: boolean,
-	search?: boolean,
-	reference?: {
-		table: string,
-		column: string,
-	},
+export type Database = {
+	// TODO: type
+	select: (table: string, opts?: SelectOpts) => any[],
+	insert: (table: string, data: SQLData) => void,
+	update: (table: string, data: SQLData, where: WhereCondition) => void,
+	delete: (table: string, where: WhereCondition) => void,
+	find: (table: string, where: WhereCondition) => any,
+	findAll: (table: string, where: WhereCondition) => any[],
+	count: (table: string, where?: WhereCondition) => number,
+	search: (table: string, text: string) => any[],
+	transaction: (action: () => void) => void,
+	close: () => void,
+    serialize: (name?: string) => Buffer,
 }
-
-export type TableDef = Record<string, ColumnProps>
 
 // TODO: support views
 // TODO: builtin cache system
-export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}) {
+export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): Database {
 
 	let uninitialized = !fs.existsSync(dbname)
-	const bdb = new Database(dbname)
-	// TODO: type
-	const queries: Record<string, any> = {}
+	const bdb = new sqlite.Database(dbname)
+	const queries: Record<string, Statement> = {}
 	const tables = opts.tables ?? {}
 
 	function compile(sql: string) {
@@ -260,8 +293,8 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}) {
 	}
 
 	// TODO: support OR
-	function genWhereSQL(cond: WhereCondition, vars: SQLVars) {
-		return `WHERE ${Object.entries(cond).map(([k, v]) => {
+	function genWhereSQL(where: WhereCondition, vars: SQLVars) {
+		return `WHERE ${Object.entries(where).map(([k, v]) => {
 			if (typeof v === "object") {
 				vars[`$where_${k}`] = v.value
 				return `${k} ${v.op} $where_${k}`
@@ -272,12 +305,12 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}) {
 		}).join(" AND ")}`
 	}
 
-	function genOrderSQL(cond: OrderCondition) {
-		return `ORDER BY ${cond.columns.join(", ")}${cond.desc ? " DESC" : ""}`
+	function genOrderSQL(order: OrderCondition) {
+		return `ORDER BY ${order.columns.join(", ")}${order.desc ? " DESC" : ""}`
 	}
 
-	function genLimitSQL(cond: LimitCondition, vars: SQLVars) {
-		vars["$limit"] = cond
+	function genLimitSQL(limit: LimitCondition, vars: SQLVars) {
+		vars["$limit"] = limit
 		return `LIMIT $limit`
 	}
 
@@ -296,7 +329,7 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}) {
 		}).join(", ")}`
 	}
 
-	function genColumnSQL(name: string, opts: ColumnProps) {
+	function genColumnSQL(name: string, opts: ColumnDef) {
 		let code = name + " " + opts.type
 		if (opts.primaryKey) code += " PRIMARY KEY"
 		if (opts.autoIncrement) code += " AUTOINCREMENT"
@@ -307,7 +340,7 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}) {
 		return code
 	}
 
-	function genColumnsSQL(input: Record<string, ColumnProps>) {
+	function genColumnsSQL(input: Record<string, ColumnDef>) {
 		return Object.entries(input)
 			.map(([name, opts]) => "    " + genColumnSQL(name, opts))
 			.join(",\n")
@@ -320,7 +353,7 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}) {
 	// TODO: join
 	function select(table: string, opts: SelectOpts = {}) {
 		if (!table) throw new Error("Cannot SELECT from database without table")
-		if (!tables[table]) throw new Error(`table doesn't exist: ${table}`)
+		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
 		const vars = {}
 		return compile(`
 SELECT${opts.distinct ? " DISTINCT" : ""} ${!opts.columns || opts.columns === "*" ? "*" : opts.columns.join(", ")}
@@ -331,22 +364,31 @@ ${opts.limit ? genLimitSQL(opts.limit, vars) : ""}
 		`).all(vars) ?? []
 	}
 
-	function findAll(table: string, cond: WhereCondition) {
+	function count(table: string, where?: WhereCondition) {
+		if (!table) throw new Error("Cannot SELECT from database without table")
+		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
+		const vars = {}
+		const sql = `SELECT COUNT(*) FROM ${table} ${where ? genWhereSQL(where, vars) : ""}`
+		// @ts-ignore
+		return Number(compile(sql).all(vars)[0]["COUNT(*)"])
+	}
+
+	function findAll(table: string, where: WhereCondition) {
 		return select(table, {
-			where: cond,
+			where: where,
 		})
 	}
 
-	function find(table: string, cond: WhereCondition) {
+	function find(table: string, where: WhereCondition) {
 		return select(table, {
-			where: cond,
+			where: where,
 			limit: 1,
 		})[0]
 	}
 
 	// TODO: join
 	function search(table: string, text: string) {
-		if (!tables[table]) throw new Error(`table doesn't exist: ${table}`)
+		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
 		return compile(`
 SELECT * FROM ${table}_fts WHERE ${table}_fts MATCH $query ORDER BY rank
 		`).all({
@@ -358,7 +400,7 @@ SELECT * FROM ${table}_fts WHERE ${table}_fts MATCH $query ORDER BY rank
 		if (!table || !data) {
 			throw new Error("Cannot INSERT into database without table / data")
 		}
-		if (!tables[table]) throw new Error(`table doesn't exist: ${table}`)
+		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
 		if (table.endsWith("_fts")) {
 			throw new Error("Cannot manually update a fts table")
 		}
@@ -373,7 +415,7 @@ ${genValuesSQL(data, vars)}
 		if (!table || !data || !where) {
 			throw new Error("Cannot UPDATE database without table / data / where")
 		}
-		if (!tables[table]) throw new Error(`table doesn't exist: ${table}`)
+		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
 		if (table.endsWith("_fts")) {
 			throw new Error("Cannot manually update a fts table")
 		}
@@ -390,7 +432,7 @@ ${genWhereSQL(where, vars)}
 		if (!table || !where) {
 			throw new Error("Cannot DELETE from database without table / where")
 		}
-		if (!tables[table]) throw new Error(`table doesn't exist: ${table}`)
+		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
 		if (table.endsWith("_fts")) {
 			throw new Error("Cannot manually update a fts table")
 		}
@@ -488,8 +530,13 @@ END
 		}
 	}
 
-	const db = {
+	if (opts.wal) {
+		run("PRAGMA journal_mode = WAL;")
+	}
+
+	const db: Database = {
 		select,
+		count,
 		insert,
 		update,
 		delete: remove,
@@ -519,8 +566,47 @@ END
 
 }
 
-const trimSlashes = (str: string) => str.replace(/\/*$/, "").replace(/^\/*/, "")
-const parentPath = (p: string, sep = "/") => p.split(sep).slice(0, -1).join(sep)
+export type AnalyticsOpts = {
+	name?: string,
+	ignorePaths?: Array<string | RegExp>,
+}
+
+export function createAnalytics(server: Server, opts: AnalyticsOpts = {}) {
+	const db = createDatabase(opts.name ?? "analytics.db", {
+		timeCreated: true,
+		tables: {
+			"request": {
+				"id":     { type: "INTEGER", primaryKey: true, autoIncrement: true },
+				"path":   { type: "TEXT", index: true },
+				"query":  { type: "TEXT" },
+				"method": { type: "TEXT" },
+			},
+		}
+	})
+	const ignorePaths = new Set([
+		"/service-worker.js",
+		"/favicon.ico",
+	])
+	server.handle((req) => {
+		const url = new URL(req.url)
+		if (ignorePaths.has(url.pathname)) return
+		if (opts.ignorePaths) {
+			for (const p of opts.ignorePaths) {
+				if (url.pathname.match(p)) return
+			}
+		}
+		db.insert("request", {
+			"path": url.pathname,
+			"query": url.search,
+			"method": req.method,
+		})
+	})
+	return {
+		numRequests: () => {
+			return db.count("request")
+		}
+	}
+}
 
 function isFile(path: string) {
 	try {
@@ -682,12 +768,10 @@ type StyleSheetRecursive = {
 	[name: string]: string | number | StyleSheetRecursive,
 }
 
+// TODO: fix
+// https://www.typescriptlang.org/docs/handbook/2/objects.html#index-signatures
 export type CSS = {
-	// TODO: fix void here
-	// https://www.typescriptlang.org/docs/handbook/2/objects.html#index-signatures
-	[name: string]: {
-		[name: string]: string | number | StyleSheetRecursive,
-	},
+	[name: string]: StyleSheetRecursive,
 	// @ts-ignore
 	"@keyframes"?: {
 		[name: string]: Record<string, StyleSheet>,
@@ -943,8 +1027,8 @@ export function cron(
 	}
 }
 
-export function exec(cmd: string | string[], opts: Parameters<typeof Bun.spawn>[1] = {}) {
-	return Bun.spawn(Array.isArray(cmd) ? cmd : cmd.split(" "), {
+function exec(cmd: string | string[], opts: Parameters<typeof Bun.spawn>[1] = {}) {
+	return Bun.spawnSync(Array.isArray(cmd) ? cmd : cmd.split(" "), {
 		stdin: "inherit",
 		stdout: "inherit",
 		stderr: "inherit",
@@ -983,6 +1067,7 @@ USAGE
 			"--exclude", ".DS_Store",
 			"--exclude", ".git",
 			"--exclude", "data",
+			"--exclude", "node_modules",
 			".", `${host}:${dir}`,
 		])
 		if (service) {

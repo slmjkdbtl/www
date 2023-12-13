@@ -1,5 +1,12 @@
 import {
+	createServer,
+	createDatabase,
+	createAnalytics,
+	res,
 	css,
+	h,
+	js,
+	cron,
 } from "./www"
 
 console.log(css({
@@ -41,3 +48,10 @@ console.log(css({
 		},
 	},
 }, { readable: true }))
+
+const server = createServer()
+const ana = createAnalytics(server)
+
+server.get("/", () => {
+	return res.html(`<code>${ana.numRequests()}</code>`)
+})
