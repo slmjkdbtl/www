@@ -1,7 +1,6 @@
 import {
 	createServer,
 	createDatabase,
-	createAnalytics,
 	res,
 	css,
 	h,
@@ -50,8 +49,7 @@ console.log(css({
 }, { readable: true }))
 
 const server = createServer()
-const ana = createAnalytics(server)
 
 server.get("/", () => {
-	return res.html(`<code>${ana.numRequests()}</code>`)
+	return res.html(`<code>oh hi!</code>`)
 })

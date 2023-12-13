@@ -27,7 +27,6 @@ export type Server = {
 	patch: (pat: string, handler: MatchHandler) => void,
 	files: (route: string, root: string) => void,
 	dir: (route: string, root: string) => void,
-	getIP: (req: Request) => SocketAddress | null,
 }
 
 // TODO: pass res object instead of returning?
@@ -90,7 +89,6 @@ export function createServer(opts: Omit<ServeOptions, "fetch"> = {}): Server {
 	}
 
 	return {
-		getIP: (req: Request) => server.requestIP(req),
 		handle: handle,
 		error: (action: ErrorHandler) => handleError = action,
 		notFound: (action: NotFoundHandler) => handleNotFound = action,
@@ -564,48 +562,6 @@ END
 
 	return db
 
-}
-
-export type AnalyticsOpts = {
-	name?: string,
-	ignorePaths?: Array<string | RegExp>,
-}
-
-export function createAnalytics(server: Server, opts: AnalyticsOpts = {}) {
-	const db = createDatabase(opts.name ?? "analytics.db", {
-		timeCreated: true,
-		tables: {
-			"request": {
-				"id":     { type: "INTEGER", primaryKey: true, autoIncrement: true },
-				"path":   { type: "TEXT", index: true },
-				"query":  { type: "TEXT" },
-				"method": { type: "TEXT" },
-			},
-		}
-	})
-	const ignorePaths = new Set([
-		"/service-worker.js",
-		"/favicon.ico",
-	])
-	server.handle((req) => {
-		const url = new URL(req.url)
-		if (ignorePaths.has(url.pathname)) return
-		if (opts.ignorePaths) {
-			for (const p of opts.ignorePaths) {
-				if (url.pathname.match(p)) return
-			}
-		}
-		db.insert("request", {
-			"path": url.pathname,
-			"query": url.search,
-			"method": req.method,
-		})
-	})
-	return {
-		numRequests: () => {
-			return db.count("request")
-		}
-	}
 }
 
 function isFile(path: string) {
