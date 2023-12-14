@@ -215,8 +215,15 @@ export function matchPath(pat: string, url: string): Record<string, string> | nu
 
 }
 
+export type ColumnType =
+	| "INTEGER"
+	| "TEXT"
+	| "BOOLEAN"
+	| "REAL"
+	| "BLOB"
+
 export type ColumnDef = {
-	type: string,
+	type: ColumnType,
 	primaryKey?: boolean,
 	autoIncrement?: boolean,
 	allowNull?: boolean,
@@ -230,14 +237,8 @@ export type ColumnDef = {
 	},
 }
 
-export type TableDef = Record<string, ColumnDef>
-
 export type CreateDatabaseOpts = {
-	// TODO: move these to table def
-	timeCreated?: boolean,
-	timeUpdated?: boolean,
 	init?: (db: Database) => void,
-	tables?: Record<string, TableDef>,
 	wal?: boolean,
 }
 
@@ -258,16 +259,27 @@ export type SelectOpts = {
 	limit?: LimitCondition,
 }
 
+export type TableSchema = Record<string, ColumnDef>
+
+export type Table<D> = {
+	select: (opts?: SelectOpts) => D[],
+	insert: (data: D) => void,
+	update: (data: D, where: WhereCondition) => void,
+	delete: (where: WhereCondition) => void,
+	find: (where: WhereCondition) => D,
+	findAll: (where: WhereCondition) => D[],
+	count: (where?: WhereCondition) => number,
+	search: (text: string) => D[],
+	schema: TableSchema,
+}
+
+export type TableOpts = {
+	timeCreated?: boolean,
+	timeUpdated?: boolean,
+}
+
 export type Database = {
-	// TODO: type
-	select: (table: string, opts?: SelectOpts) => any[],
-	insert: (table: string, data: SQLData) => void,
-	update: (table: string, data: SQLData, where: WhereCondition) => void,
-	delete: (table: string, where: WhereCondition) => void,
-	find: (table: string, where: WhereCondition) => any,
-	findAll: (table: string, where: WhereCondition) => any[],
-	count: (table: string, where?: WhereCondition) => number,
-	search: (table: string, text: string) => any[],
+	table: <D extends Record<string, any>>(name: string, schema: TableSchema, opts?: TableOpts) => Table<D>,
 	transaction: (action: () => void) => void,
 	close: () => void,
     serialize: (name?: string) => Buffer,
@@ -280,7 +292,10 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 	let uninitialized = !fs.existsSync(dbname)
 	const bdb = new sqlite.Database(dbname)
 	const queries: Record<string, Statement> = {}
-	const tables = opts.tables ?? {}
+
+	if (opts.wal) {
+		bdb.run("PRAGMA journal_mode = WAL;")
+	}
 
 	function compile(sql: string) {
 		sql = sql.trim()
@@ -348,117 +363,45 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 		return bdb.transaction(action)()
 	}
 
-	// TODO: join
-	function select(table: string, opts: SelectOpts = {}) {
-		if (!table) throw new Error("Cannot SELECT from database without table")
-		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
-		const vars = {}
-		return compile(`
-SELECT${opts.distinct ? " DISTINCT" : ""} ${!opts.columns || opts.columns === "*" ? "*" : opts.columns.join(", ")}
-FROM ${table}
-${opts.where ? genWhereSQL(opts.where, vars) : ""}
-${opts.order ? genOrderSQL(opts.order) : ""}
-${opts.limit ? genLimitSQL(opts.limit, vars) : ""}
-		`).all(vars) ?? []
-	}
-
-	function count(table: string, where?: WhereCondition) {
-		if (!table) throw new Error("Cannot SELECT from database without table")
-		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
-		const vars = {}
-		const sql = `SELECT COUNT(*) FROM ${table} ${where ? genWhereSQL(where, vars) : ""}`
-		// @ts-ignore
-		return Number(compile(sql).all(vars)[0]["COUNT(*)"])
-	}
-
-	function findAll(table: string, where: WhereCondition) {
-		return select(table, {
-			where: where,
-		})
-	}
-
-	function find(table: string, where: WhereCondition) {
-		return select(table, {
-			where: where,
-			limit: 1,
-		})[0]
-	}
-
-	// TODO: join
-	function search(table: string, text: string) {
-		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
-		return compile(`
-SELECT * FROM ${table}_fts WHERE ${table}_fts MATCH $query ORDER BY rank
-		`).all({
-			"$query": text,
-		}) ?? []
-	}
-
-	function insert(table: string, data: SQLData) {
-		if (!table || !data) {
-			throw new Error("Cannot INSERT into database without table / data")
-		}
-		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
-		if (table.endsWith("_fts")) {
-			throw new Error("Cannot manually update a fts table")
-		}
-		const vars = {}
-		compile(`
-INSERT INTO ${table} (${Object.keys(data).join(", ")})
-${genValuesSQL(data, vars)}
-		`).run(vars)
-	}
-
-	function update(table: string, data: SQLData, where: WhereCondition) {
-		if (!table || !data || !where) {
-			throw new Error("Cannot UPDATE database without table / data / where")
-		}
-		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
-		if (table.endsWith("_fts")) {
-			throw new Error("Cannot manually update a fts table")
-		}
-		const vars = {}
-		const keys = Object.keys(data)
-		compile(`
-UPDATE ${table}
-${genSetSQL(data, vars)}
-${genWhereSQL(where, vars)}
-		`).run(vars)
-	}
-
-	function remove(table: string, where: WhereCondition) {
-		if (!table || !where) {
-			throw new Error("Cannot DELETE from database without table / where")
-		}
-		if (!tables[table]) throw new Error(`Table doesn't exist: ${table}`)
-		if (table.endsWith("_fts")) {
-			throw new Error("Cannot manually update a fts table")
-		}
-		const vars = {}
-		compile(`
-DELETE FROM ${table}
-${genWhereSQL(where, vars)}
-		`).run(vars)
-	}
-
 	function run(sql: string) {
 		bdb.run(sql.trim())
 	}
 
-	function create(table: string, cols: TableDef) {
-		if (table.endsWith("_fts")) {
-			throw new Error("Table name cannot end with _fts")
+	// TODO: auto migration?
+	function table<D extends Record<string, any>>(
+		tableName: string,
+		schema: TableSchema,
+		opts: TableOpts = {}
+	): Table<D> {
+
+		if (tableName.endsWith("_fts")) {
+			throw new Error("Cannot manually operate a fts table")
 		}
-		if (opts.timeCreated && cols["time_created"]) {
-			throw new Error("Column time_created is reserved")
+
+		const boolKeys: string[] = []
+
+		for (const k in schema) {
+			const t = schema[k].type
+			if (t === "BOOLEAN") {
+				boolKeys.push(k)
+			}
 		}
-		if (opts.timeUpdated && cols["time_updated"]) {
-			throw new Error("Column time_updated is reserved")
+
+		const needsTransform = boolKeys.length > 0
+
+		function transformItem(item: any): D {
+			for (const k of boolKeys) {
+				item[k] = Boolean(item[k])
+			}
+			return item
 		}
-		run(`
-CREATE TABLE ${table} (
+
+		if (uninitialized) {
+
+			run(`
+CREATE TABLE ${tableName} (
 ${genColumnsSQL({
-...cols,
+...schema,
 ...(opts.timeCreated ? {
 	"time_created": { type: "TEXT", default: "CURRENT_TIMESTAMP" },
 } : {}),
@@ -467,94 +410,159 @@ ${genColumnsSQL({
 } : {}),
 })}
 )
-		`)
-		const pks = []
-		const searches = []
-		for (const name in cols) {
-			const config = cols[name]
-			if (config.primaryKey) {
-				pks.push(name)
+			`)
+			const pks = []
+			const searches = []
+			for (const colName in schema) {
+				const config = schema[colName]
+				if (config.primaryKey) {
+					pks.push(colName)
+				}
+				if (config.index) {
+					run(`
+CREATE INDEX idx_${tableName}_${colName} ON ${tableName}(${colName})
+					`)
+				}
+				if (config.search) {
+					searches.push(colName)
+				}
 			}
-			if (config.index) {
+			if (opts.timeUpdated) {
 				run(`
-CREATE INDEX idx_${table}_${name} ON ${table}(${name})
+CREATE TRIGGER trigger_${tableName}_time_updated
+AFTER UPDATE ON ${tableName}
+BEGIN
+	UPDATE ${tableName}
+	SET time_updated = CURRENT_TIMESTAMP
+	WHERE ${pks.map((pk) => `${pk} = NEW.${pk}`).join(" AND ")};
+END
 				`)
 			}
-			if (config.search) {
-				searches.push(name)
+			if (searches.length > 0) {
+				// TODO: content / content_rowid?
+				run(`
+CREATE VIRTUAL TABLE ${tableName}_fts USING fts5 (${[...pks, ...searches].join(", ")})
+			`)
+			run(`
+CREATE TRIGGER trigger_${tableName}_fts_insert
+AFTER INSERT ON ${tableName}
+BEGIN
+	INSERT INTO ${tableName}_fts (${[...pks, ...searches].join(", ")})
+	VALUES (${[...pks, ...searches].map((c) => `NEW.${c}`).join(", ")});
+END
+				`)
+				run(`
+CREATE TRIGGER trigger_${tableName}_fts_update
+AFTER UPDATE ON ${tableName}
+BEGIN
+	UPDATE ${tableName}_fts
+	SET ${searches.map((c) => `${c} = NEW.${c}`).join(", ")}
+	WHERE ${pks.map((pk) => `${pk} = NEW.${pk}`).join(" AND ")};
+END
+				`)
+				run(`
+CREATE TRIGGER trigger_${tableName}_fts_delete
+AFTER DELETE ON ${tableName}
+BEGIN
+	DELETE FROM ${tableName}_fts
+	WHERE ${pks.map((pk) => `${pk} = OLD.${pk}`).join(" AND ")};
+END
+				`)
 			}
-		}
-		if (opts.timeUpdated) {
-			run(`
-CREATE TRIGGER trigger_${table}_time_updated
-AFTER UPDATE ON ${table}
-BEGIN
-    UPDATE ${table}
-    SET time_updated = CURRENT_TIMESTAMP
-    WHERE ${pks.map((pk) => `${pk} = NEW.${pk}`).join(" AND ")};
-END
-			`)
-		}
-		if (searches.length > 0) {
-			// TODO: content / content_rowid?
-			run(`
-CREATE VIRTUAL TABLE ${table}_fts USING fts5 (${[...pks, ...searches].join(", ")})
-			`)
-			run(`
-CREATE TRIGGER trigger_${table}_fts_insert
-AFTER INSERT ON ${table}
-BEGIN
-    INSERT INTO ${table}_fts (${[...pks, ...searches].join(", ")})
-    VALUES (${[...pks, ...searches].map((c) => `NEW.${c}`).join(", ")});
-END
-			`)
-			run(`
-CREATE TRIGGER trigger_${table}_fts_update
-AFTER UPDATE ON ${table}
-BEGIN
-    UPDATE ${table}_fts
-    SET ${searches.map((c) => `${c} = NEW.${c}`).join(", ")}
-    WHERE ${pks.map((pk) => `${pk} = NEW.${pk}`).join(" AND ")};
-END
-			`)
-			run(`
-CREATE TRIGGER trigger_${table}_fts_delete
-AFTER DELETE ON ${table}
-BEGIN
-    DELETE FROM ${table}_fts
-    WHERE ${pks.map((pk) => `${pk} = OLD.${pk}`).join(" AND ")};
-END
-			`)
-		}
-	}
 
-	if (opts.wal) {
-		run("PRAGMA journal_mode = WAL;")
+		}
+
+		// TODO: transform types?
+		function select(opts: SelectOpts = {}) {
+			const vars = {}
+			return compile(`
+SELECT${opts.distinct ? " DISTINCT" : ""} ${!opts.columns || opts.columns === "*" ? "*" : opts.columns.join(", ")}
+FROM ${tableName}
+${opts.where ? genWhereSQL(opts.where, vars) : ""}
+${opts.order ? genOrderSQL(opts.order) : ""}
+${opts.limit ? genLimitSQL(opts.limit, vars) : ""}
+			`).all(vars) as D[] ?? []
+		}
+
+		function count(where?: WhereCondition) {
+			const vars = {}
+			const sql = `SELECT COUNT(*) FROM ${tableName} ${where ? genWhereSQL(where, vars) : ""}`
+			// @ts-ignore
+			return Number(compile(sql).all(vars)[0]["COUNT(*)"])
+		}
+
+		function findAll(where: WhereCondition) {
+			return select({
+				where: where,
+			})
+		}
+
+		function find(where: WhereCondition) {
+			return select({
+				where: where,
+				limit: 1,
+			})[0]
+		}
+
+		// TODO: join
+		function search(text: string) {
+			const sql = `SELECT * FROM ${tableName}_fts WHERE ${tableName}_fts MATCH $query ORDER BY rank`
+			return compile(sql).all({
+				"$query": text,
+			}) as D[] ?? []
+		}
+
+		function insert(data: D) {
+			if (!data) {
+				throw new Error("Cannot INSERT into database without table / data")
+			}
+			const vars = {}
+			compile(`
+INSERT INTO ${tableName} (${Object.keys(data).join(", ")})
+${genValuesSQL(data, vars)}
+			`).run(vars)
+		}
+
+		function update(data: D, where: WhereCondition) {
+			const vars = {}
+			const keys = Object.keys(data)
+			compile(`
+UPDATE ${tableName}
+${genSetSQL(data, vars)}
+${genWhereSQL(where, vars)}
+			`).run(vars)
+		}
+
+		function remove(where: WhereCondition) {
+			const vars = {}
+			compile(`
+DELETE FROM ${tableName}
+${genWhereSQL(where, vars)}
+			`).run(vars)
+		}
+
+		return {
+			select,
+			find,
+			findAll,
+			count,
+			update,
+			insert,
+			search,
+			delete: remove,
+			schema,
+		}
+
 	}
 
 	const db: Database = {
-		select,
-		count,
-		insert,
-		update,
-		delete: remove,
-		find,
-		findAll,
-		search,
+		table,
 		transaction,
 		close: bdb.close,
 		serialize: bdb.serialize,
 	}
 
 	if (uninitialized) {
-		// TODO: auto migration?
-		if (opts.tables) {
-			transaction(() => {
-				for (const name in opts.tables) {
-					create(name, opts.tables[name])
-				}
-			})
-		}
 		if (opts.init) {
 			opts.init(db)
 		}

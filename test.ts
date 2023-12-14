@@ -8,48 +8,39 @@ import {
 	cron,
 } from "./www"
 
-console.log(css({
-	"a": {
-		"color": "red",
-		"font-size": "24px",
-		"flex": 1,
-		"@media": {
-			"screen and (max-width: 960px)": {
-				"width": "84%",
-			},
-			"screen and (max-width: 640px)": {
-				"width": "100%",
-			},
-		},
-		"> .img": {
-			"width": "100%",
-			":hover": {
-				"opacity": "1",
-			}
-		},
-	},
-	"@font-face": [
-		{
-			"font-family": "apl386",
-			"src": "url(/fonts/apl386.ttf)",
-		},
-	],
-	"@keyframes": {
-		"bounce": {
-			"from": {
-				"color": "#000000",
-				"width": "100px",
-			},
-			"to": {
-				"color": "#000000",
-				"width": "200px",
-			},
-		},
-	},
-}, { readable: true }))
-
 const server = createServer()
 
+const db = createDatabase("data/test.db")
+
+type User = {
+	id?: number,
+	name: string,
+	desc: string | null,
+	picture: string | null,
+	alive: boolean,
+}
+
+const users = db.table<User>("user", {
+	"id":       { type: "INTEGER", primaryKey: true, autoIncrement: true },
+	"name":     { type: "TEXT", unique: true, index: true },
+	"desc":     { type: "TEXT", allowNull: true },
+	"picture":  { type: "BLOB", allowNull: true },
+	"alive":    { type: "BOOLEAN" },
+})
+
 server.get("/", () => {
-	return res.html(`<code>oh hi!</code>`)
+	return res.html("<!DOCTYPE html>" + h("html", {}, [
+		h("head", {}, [
+			h("style", {}, css({
+				// TODO
+			})),
+		]),
+		h("body", {}, [
+			h("table", {}, [
+				h("tr", {}, Object.keys(users.schema).map((k) =>
+					h("th", {}, k),
+				)),
+			]),
+		]),
+	]))
 })
