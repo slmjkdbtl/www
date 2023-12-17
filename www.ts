@@ -91,6 +91,11 @@ export type Server = {
 		onOpen: (action: (ws: WebSocket) => void) => EventController,
 		onClose: (action: (ws: WebSocket) => void) => EventController,
 		broadcast: (data: string | BufferSource, compress?: boolean) => void,
+		publish: (
+			topic: string,
+			data: string | TypedArray | DataView | ArrayBuffer | SharedArrayBuffer,
+			compress?: boolean,
+		) => ServerWebSocketSendStatus,
 	},
 }
 
@@ -287,7 +292,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 		use: use,
 		error: (action: ErrorHandler) => errHandler = action,
 		notFound: (action: NotFoundHandler) => notFoundHandler = action,
-		stop: bunServer.stop,
+		stop: bunServer.stop.bind(bunServer),
 		hostname: bunServer.hostname,
 		port: bunServer.port,
 		ws: {
@@ -295,6 +300,8 @@ export function createServer(opts: ServerOpts = {}): Server {
 			onMessage: (action) => wsEvents.message.add(action),
 			onOpen: (action) => wsEvents.open.add(action),
 			onClose: (action) => wsEvents.close.add(action),
+			publish: bunServer.publish.bind(bunServer),
+			// TODO: option to exclude self
 			broadcast: (data: string | BufferSource, compress?: boolean) => {
 				wsClients.forEach((client) => {
 					client.send(data, compress)

@@ -40,29 +40,6 @@ const usersTable = db.table<User>("user", {
 	]
 })
 
-// TODO: why req.url.protocol isn't ws?
-server.use(route("GET", "/ws", ({ req, res, upgrade, next }) => {
-	if (!upgrade()) {
-		res.sendText("failed to start web socket", { status: 500 })
-	}
-	next()
-}))
-
-server.ws.onMessage((ws, msg) => {
-	const id = ws.data.id
-	console.log(`${id}: ${msg}`)
-	ws.send(`what do you mean ${msg}? client ${id}`)
-	server.ws.broadcast(`${id} said: "${msg}"`)
-})
-
-server.ws.onOpen((ws) => {
-	console.log(`client connect: ${ws.data.id}`)
-})
-
-server.ws.onClose((ws) => {
-	console.log(`client close: ${ws.data.id}`)
-})
-
 const styles = {
 	"*": {
 		"box-sizing": "border-box",
@@ -125,37 +102,65 @@ server.use(route("GET", "/chat", ({ res }) => {
 		h("body", {}, [
 			h("h1", {}, "chat room"),
 			h("div", { id: "messages" }, []),
+			h("p", { id: "username" }, ""),
 			h("input", { id: "input" }),
 			h("script", {}, `
 const ws = new WebSocket("ws://localhost:3000/ws")
 const input = document.querySelector("#input")
 const messages = document.querySelector("#messages")
+const usernameEl = document.querySelector("#username")
 
-function addMsg(msg) {
+function addMsg(data) {
 	const el = document.createElement("p")
-	el.textContent = msg
+	el.textContent = "(" + data.user + ")" + " " + data.msg
 	messages.appendChild(el)
 }
 
 input.onkeydown = (e) => {
 	if (e.key === "Enter") {
-		ws.send(e.target.value)
-		addMsg(e.target.value)
+		ws.send(JSON.stringify({
+			msg: e.target.value,
+		}))
 		e.target.value = ""
 	}
 }
 
-ws.onopen = () => {
-	console.log("ws opened")
-}
-
 ws.onmessage = (e) => {
-	addMsg(e.data)
+	const data = JSON.parse(e.data)
+	if (data.type === "MESSAGE") {
+		addMsg(data)
+	} else if (data.type === "CONNECT") {
+		usernameEl.textContent = "your id is " + data.id
+	}
 }
 			`),
 		]),
 	]))
 }))
+
+// TODO: why req.url.protocol isn't ws?
+server.use(route("GET", "/ws", ({ req, res, upgrade, next }) => {
+	const success = upgrade()
+	if (!success) {
+		res.sendText("failed to start web socket", { status: 500 })
+	}
+}))
+
+server.ws.onMessage((ws, msg) => {
+	const data = JSON.parse(msg as string)
+	server.ws.broadcast(JSON.stringify({
+		type: "MESSAGE",
+		user: ws.data.id,
+		msg: data.msg,
+	}))
+})
+
+server.ws.onOpen((ws) => {
+	ws.send(JSON.stringify({
+		type: "CONNECT",
+		id: ws.data.id,
+	}))
+})
 
 server.use(dir("/dir", "."))
 
