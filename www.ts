@@ -3,124 +3,230 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import type { ServeOptions, SocketAddress } from "bun"
+import type { ServeOptions } from "bun"
 import * as sqlite from "bun:sqlite"
-import type { Statement } from "bun:sqlite"
 
 export const isDev = Boolean(Bun.env["DEV"])
 
-export type Handler = (req: Request) => Response | Promise<Response> | void
-export type MatchHandler = (req: Request, match?: Record<string, string>) => Response | Promise<Response> | void
-export type ErrorHandler = (req: Request, err: Error) => Response | Promise<Response>
-export type NotFoundHandler = (req: Request) => Response | Promise<Response>
+export type Req = {
+	method: string,
+	headers: Headers,
+	url: URL,
+	params: Record<string, string>,
+	text: () => Promise<string>,
+	arrayBuffer: () => Promise<ArrayBuffer>,
+	json<T = any>(): Promise<T>,
+	blob: () => Promise<Blob>,
+}
+
+export type Res = {
+	headers: Headers,
+	status: number,
+	send: (
+		data?:
+			| ReadableStream
+			| BlobPart
+			| BlobPart[]
+			| FormData
+			| URLSearchParams
+			| null,
+		opt?: ResOpt,
+	) => void,
+	sendText: (content: string, opt?: ResOpt) => void,
+	sendHTML: (content: string, opt?: ResOpt) => void,
+	sendJSON: <T = any>(content: T, opt?: ResOpt) => void,
+	sendFile: (path: string, opt?: ResOpt) => void,
+	redirect: (location: string, opt?: ResOpt) => void,
+}
+
+export type ResOpt = {
+	headers?: HeadersInit,
+	status?: number,
+}
+
+export type Ctx = {
+	req: Req,
+	res: Res,
+	next: () => void,
+}
+
+export type Handler = (ctx: Ctx) => void
+export type ErrorHandler = (ctx: Ctx, err: Error) => void
+export type NotFoundHandler = (ctx: Ctx) => void
+
+export class Registry<T> extends Map<number, T> {
+	private lastID: number = 0
+	push(v: T): number {
+		const id = this.lastID
+		this.set(id, v)
+		this.lastID++
+		return id
+	}
+	pushd(v: T): () => void {
+		const id = this.push(v)
+		return () => this.delete(id)
+	}
+}
 
 export type Server = {
-	// TODO: return an event controller
-	handle: (handler: Handler) => void,
+	// TODO: return event controllers?
+	use: (handler: Handler) => void,
 	error: (handler: ErrorHandler) => void,
 	notFound: (action: NotFoundHandler) => void,
-	match: (pat: string, handler: MatchHandler) => void,
-	get: (pat: string, handler: MatchHandler) => void,
-	post: (pat: string, handler: MatchHandler) => void,
-	put: (pat: string, handler: MatchHandler) => void,
-	delete: (pat: string, handler: MatchHandler) => void,
-	patch: (pat: string, handler: MatchHandler) => void,
+	match: (pat: string, handler: Handler) => void,
+	get: (pat: string, handler: Handler) => void,
+	post: (pat: string, handler: Handler) => void,
+	put: (pat: string, handler: Handler) => void,
+	delete: (pat: string, handler: Handler) => void,
+	patch: (pat: string, handler: Handler) => void,
 	files: (route: string, root: string) => void,
 	dir: (route: string, root: string) => void,
 }
 
-// TODO: pass res object instead of returning?
-export function createServer(opts: Omit<ServeOptions, "fetch"> = {}): Server {
+export type ServerOpts = Omit<ServeOptions, "fetch">
+
+export function createServer(opts: ServerOpts = {}): Server {
 
 	const server = Bun.serve({
 		...opts,
 		fetch: fetch,
 	})
 
-	async function fetch(req: Request) {
-		// TODO: better async?
-		for (const handle of handlers) {
-			try {
-				const res = handle(req)
-				if (res instanceof Promise) {
-					const awaitedRes = await res
-					if (awaitedRes) return awaitedRes
-				} else {
-					if (res) return res
-				}
-			} catch (e) {
-				return handleError(req, e as Error)
+	// TODO: error handling
+	async function fetch(bunReq: Request): Promise<Response> {
+		return new Promise((resolve) => {
+			let done = false
+			const req: Req = {
+				method: bunReq.method,
+				url: new URL(bunReq.url),
+				headers: bunReq.headers,
+				params: {},
+				text: bunReq.text,
+				json: bunReq.json,
+				arrayBuffer: bunReq.arrayBuffer,
+				blob: bunReq.blob,
 			}
-		}
-		return handleNotFound(req)
+			const res: Res = {
+				headers: new Headers(),
+				status: 200,
+				send(data, opt) {
+					resolve(new Response(data, {
+						headers: this.headers,
+						status: this.status,
+						...opt,
+					}))
+					done = true
+				},
+				sendText(content, opt) {
+					this.headers.append("Content-Type", "text/plain; charset=utf-8")
+					this.send(content, opt)
+				},
+				sendHTML(content, opt) {
+					this.headers.append("Content-Type", "text/html; charset=utf-8")
+					this.send(content, opt)
+				},
+				sendJSON(content, opt) {
+					this.headers.append("Content-Type", "application/json")
+					this.send(JSON.stringify(content), opt)
+				},
+				sendFile(path, opt) {
+					if (!isFile(path)) return
+					const file = Bun.file(path)
+					if (file.size === 0) return
+					this.headers.append("Content-Type", file.type)
+					this.send(file, opt)
+				},
+				redirect(location: string, opt) {
+					this.status = 303
+					this.headers.append("Location", location)
+					this.send(null, opt)
+				},
+			}
+			const curHandlers = [...handlers.values()]
+			function next() {
+				if (done) return
+				const h = curHandlers.shift()
+				const ctx = { req, res, next }
+				if (h) {
+					try {
+						h(ctx)
+					} catch (e) {
+						errHandler(ctx, e as Error)
+					}
+				} else {
+					notFoundHandler(ctx)
+				}
+			}
+			next()
+		})
 	}
 
-	const handlers: Handler[] = []
+	const handlers: Registry<Handler> = new Registry()
 	const handle = (handler: Handler) => handlers.push(handler)
 
-	let handleError: ErrorHandler = (req, err) => {
+	let errHandler: ErrorHandler = ({ req }, err) => {
 		if (isDev) {
 			throw err
 		} else {
-			const url = new URL(req.url)
 			console.error(`Time: ${new Date()}`)
-			console.error(`Request: ${req.method} ${url.pathname}`)
+			console.error(`Request: ${req.method} ${req.url.pathname}`)
 			console.error("")
 			console.error(err)
 			return new Response("Internal server error", { status: 500 })
 		}
 	}
 
-	let handleNotFound: NotFoundHandler = (req) => new Response("404", { status: 404 })
+	let notFoundHandler: NotFoundHandler = (req) => new Response("404", { status: 404 })
 
-	function handleMatch(req: Request, pat: string, handler: MatchHandler) {
-		const url = new URL(req.url)
+	function handleMatch(ctx: Ctx, pat: string, handler: Handler) {
+		const url = new URL(ctx.req.url)
 		const match = matchPath(pat, decodeURI(url.pathname))
-		if (match) return handler(req, match)
+		if (match) {
+			ctx.req.params = match
+			return handler(ctx)
+		}
 	}
 
 	function genMethodHandler(method: string) {
 		return (pat: string, handler: Handler) => {
-			handlers.push((req) => {
-				if (req.method !== method) return
-				return handleMatch(req, pat, handler)
+			handlers.push((ctx) => {
+				if (ctx.req.method !== method) return
+				return handleMatch(ctx, pat, handler)
 			})
 		}
 	}
 
 	return {
-		handle: handle,
-		error: (action: ErrorHandler) => handleError = action,
-		notFound: (action: NotFoundHandler) => handleNotFound = action,
-		match: (pat: string, handler: MatchHandler) => handle((req) => handleMatch(req, pat, handler)),
+		use: handle,
+		error: (action: ErrorHandler) => errHandler = action,
+		notFound: (action: NotFoundHandler) => notFoundHandler = action,
+		match: (pat: string, handler: Handler) => handle((ctx) => handleMatch(ctx, pat, handler)),
 		get: genMethodHandler("GET"),
 		post: genMethodHandler("POST"),
 		put: genMethodHandler("PUT"),
 		delete: genMethodHandler("DELETE"),
 		patch: genMethodHandler("PATCH"),
 		files: (route = "", root = "") => {
-			handle((req) => {
-				const url = new URL(req.url)
+			return handle(({ req, res, next }) => {
 				route = trimSlashes(route)
-				const pathname = trimSlashes(decodeURI(url.pathname))
-				if (!pathname.startsWith(route)) return
+				const pathname = trimSlashes(decodeURI(req.url.pathname))
+				if (!pathname.startsWith(route)) return next()
 				const baseDir = "./" + trimSlashes(root)
 				const relativeURLPath = pathname.replace(new RegExp(`^${route}/?`), "")
 				const p = path.join(baseDir, relativeURLPath)
-				return res.file(p)
+				return res.sendFile(p)
 			})
 		},
 		dir: (route = "", root = "") => {
-			handle((req) => {
-				const url = new URL(req.url)
+			handle(({ req, res, next }) => {
 				route = trimSlashes(route)
-				const pathname = trimSlashes(decodeURI(url.pathname))
-				if (!pathname.startsWith(route)) return
+				const pathname = trimSlashes(decodeURI(req.url.pathname))
+				if (!pathname.startsWith(route)) return next()
 				const baseDir = "./" + trimSlashes(root)
 				const relativeURLPath = pathname.replace(new RegExp(`^${route}/?`), "")
 				const p = path.join(baseDir, relativeURLPath)
 				if (isFile(p)) {
-					return res.file(p)
+					return res.sendFile(p)
 				} else if (isDir(p)) {
 					const entries = fs.readdirSync(p)
 						.filter((entry) => !entry.startsWith("."))
@@ -137,9 +243,9 @@ export function createServer(opts: Omit<ServeOptions, "fetch"> = {}): Server {
 						}
 					}
 					const isRoot = relativeURLPath === ""
-					return res.html("<!DOCTYPE html>" + h("html", { lang: "en" }, [
+					return res.sendHTML("<!DOCTYPE html>" + h("html", { lang: "en" }, [
 						h("head", {}, [
-							h("title", {}, decodeURI(url.pathname)),
+							h("title", {}, decodeURI(req.url.pathname)),
 							h("style", {}, css({
 								"*": {
 									"margin": "0",
@@ -238,7 +344,6 @@ export type ColumnDef = {
 }
 
 export type CreateDatabaseOpts = {
-	init?: (db: Database) => void,
 	wal?: boolean,
 }
 
@@ -273,13 +378,20 @@ export type Table<D> = {
 	schema: TableSchema,
 }
 
-export type TableOpts = {
+export type TableOpts<D> = {
 	timeCreated?: boolean,
 	timeUpdated?: boolean,
+	paranoid?: boolean,
+	initData?: D[],
 }
 
+// TODO: D depends on timeCreated, timeUpdated and paranoid
 export type Database = {
-	table: <D extends Record<string, any>>(name: string, schema: TableSchema, opts?: TableOpts) => Table<D>,
+	table: <D extends Record<string, any>>(
+		name: string,
+		schema: TableSchema,
+		opts?: TableOpts<D>,
+	) => Table<D>,
 	transaction: (action: () => void) => void,
 	close: () => void,
     serialize: (name?: string) => Buffer,
@@ -289,9 +401,8 @@ export type Database = {
 // TODO: builtin cache system
 export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): Database {
 
-	let uninitialized = !fs.existsSync(dbname)
 	const bdb = new sqlite.Database(dbname)
-	const queries: Record<string, Statement> = {}
+	const queries: Record<string, sqlite.Statement> = {}
 
 	if (opts.wal) {
 		bdb.run("PRAGMA journal_mode = WAL;")
@@ -367,11 +478,10 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 		bdb.run(sql.trim())
 	}
 
-	// TODO: auto migration?
 	function table<D extends Record<string, any>>(
 		tableName: string,
 		schema: TableSchema,
-		opts: TableOpts = {}
+		opts: TableOpts<D> = {}
 	): Table<D> {
 
 		if (tableName.endsWith("_fts")) {
@@ -390,13 +500,23 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 		const needsTransform = boolKeys.length > 0
 
 		function transformItem(item: any): D {
+			if (!needsTransform) return item;
 			for (const k of boolKeys) {
 				item[k] = Boolean(item[k])
 			}
 			return item
 		}
 
-		if (uninitialized) {
+		function transformItems(items: any[]): D[] {
+			if (!needsTransform) return items;
+			return items.map(transformItem)
+		}
+
+		const exists = compile(`SELECT name FROM sqlite_master WHERE type='table' AND name='${tableName}'`).get()
+
+		if (exists) {
+			// TODO: auto migration?
+		} else {
 
 			run(`
 CREATE TABLE ${tableName} (
@@ -407,6 +527,9 @@ ${genColumnsSQL({
 } : {}),
 ...(opts.timeUpdated ? {
 	"time_updated": { type: "TEXT", default: "CURRENT_TIMESTAMP" },
+} : {}),
+...(opts.paranoid ? {
+	"time_deleted": { type: "TEXT", allowNull: true },
 } : {}),
 })}
 )
@@ -470,18 +593,23 @@ END
 				`)
 			}
 
+			if (opts.initData) {
+				opts.initData.forEach(insert)
+			}
+
 		}
 
 		// TODO: transform types?
 		function select(opts: SelectOpts = {}) {
 			const vars = {}
-			return compile(`
+			const items = compile(`
 SELECT${opts.distinct ? " DISTINCT" : ""} ${!opts.columns || opts.columns === "*" ? "*" : opts.columns.join(", ")}
 FROM ${tableName}
 ${opts.where ? genWhereSQL(opts.where, vars) : ""}
 ${opts.order ? genOrderSQL(opts.order) : ""}
 ${opts.limit ? genLimitSQL(opts.limit, vars) : ""}
 			`).all(vars) as D[] ?? []
+			return transformItems(items)
 		}
 
 		function count(where?: WhereCondition) {
@@ -535,10 +663,18 @@ ${genWhereSQL(where, vars)}
 
 		function remove(where: WhereCondition) {
 			const vars = {}
-			compile(`
+			if (opts.paranoid) {
+				// TODO
+				// @ts-ignore
+				update({
+					timeDeleted: "CURRENT_TIMESTAMP",
+				}, where)
+			} else {
+				compile(`
 DELETE FROM ${tableName}
 ${genWhereSQL(where, vars)}
-			`).run(vars)
+				`).run(vars)
+			}
 		}
 
 		return {
@@ -555,20 +691,12 @@ ${genWhereSQL(where, vars)}
 
 	}
 
-	const db: Database = {
+	return {
 		table,
 		transaction,
 		close: bdb.close,
 		serialize: bdb.serialize,
 	}
-
-	if (uninitialized) {
-		if (opts.init) {
-			opts.init(db)
-		}
-	}
-
-	return db
 
 }
 
@@ -591,49 +719,6 @@ function isDir(path: string) {
 export type ResponseOpts = {
 	status?: number,
 	headers?: Record<string, string>,
-}
-
-export const res = {
-	text: (content: string, opts: ResponseOpts = {}) => new Response(content, {
-		status: opts.status ?? 200,
-		headers: {
-			"Content-Type": "text/plain; charset=utf-8",
-			...(opts.headers ?? {}),
-		},
-	}),
-	html: (content: string, opts: ResponseOpts = {}) => new Response(content, {
-		status: opts.status ?? 200,
-		headers: {
-			"Content-Type": "text/html; charset=utf-8",
-			...(opts.headers ?? {}),
-		},
-	}),
-	json: (content: any, opts: ResponseOpts = {}) => new Response(content, {
-		status: opts.status ?? 200,
-		headers: {
-			"Content-Type": "application/json",
-			...(opts.headers ?? {}),
-		},
-	}),
-	redirect: (location: string, opts: ResponseOpts = {}) => new Response(null, {
-		status: opts.status ?? 303,
-		headers: {
-			"Location": location,
-			...(opts.headers ?? {}),
-		},
-	}),
-	file: (path: string, opts: ResponseOpts = {}) => {
-		if (!isFile(path)) return
-		const file = Bun.file(path)
-		if (file.size === 0) return
-		return new Response(file, {
-			status: opts.status ?? 200,
-			headers: {
-				"Content-Type": file.type,
-				...(opts.headers ?? {}),
-			},
-		})
-	},
 }
 
 export function getCookies(req: Request) {
@@ -736,11 +821,11 @@ type StyleSheetRecursive = {
 // https://www.typescriptlang.org/docs/handbook/2/objects.html#index-signatures
 export type CSS = {
 	[name: string]: StyleSheetRecursive,
-	// @ts-ignore
+} & {
 	"@keyframes"?: {
 		[name: string]: Record<string, StyleSheet>,
 	},
-	// @ts-ignore
+} & {
 	"@font-face"?: StyleSheet[],
 }
 

@@ -1,7 +1,6 @@
 import {
 	createServer,
 	createDatabase,
-	res,
 	css,
 	h,
 	js,
@@ -13,33 +12,70 @@ const server = createServer()
 const db = createDatabase("data/test.db")
 
 type User = {
+	// TODO: this should be ? when inserting, not ? when selecting
 	id?: number,
 	name: string,
-	desc: string | null,
-	picture: string | null,
+	desc?: string,
+	picture?: string,
 	alive: boolean,
 }
 
-const users = db.table<User>("user", {
+const usersTable = db.table<User>("user", {
 	"id":       { type: "INTEGER", primaryKey: true, autoIncrement: true },
 	"name":     { type: "TEXT", unique: true, index: true },
 	"desc":     { type: "TEXT", allowNull: true },
 	"picture":  { type: "BLOB", allowNull: true },
 	"alive":    { type: "BOOLEAN" },
+}, {
+	timeCreated: true,
+	timeUpdated: true,
+	initData: [
+		{
+			name: "tga",
+			desc: "oh hi",
+			alive: true,
+		},
+	]
 })
 
-server.get("/", () => {
-	return res.html("<!DOCTYPE html>" + h("html", {}, [
+// TODO: use table.js to update
+server.get("/", ({ res }) => {
+	const users = usersTable.select()
+	return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
 		h("head", {}, [
+			// @ts-ignore
 			h("style", {}, css({
-				// TODO
+				"@keyframes": {
+					"bounce": {
+						"from": {
+							"opacity": "1",
+						},
+						"to": {
+							"opacity": "0",
+						},
+					},
+				},
+				"@font-face": [
+					{
+						"font-family": "apl386",
+					},
+				],
 			})),
 		]),
 		h("body", {}, [
 			h("table", {}, [
-				h("tr", {}, Object.keys(users.schema).map((k) =>
-					h("th", {}, k),
-				)),
+				h("tr", {}, [
+					h("th", {}, "name"),
+					h("th", {}, "desc"),
+					h("th", {}, "picture"),
+					h("th", {}, "alive"),
+				]),
+				...(users.map((user) => h("tr", {}, [
+					h("td", {}, user.name),
+					h("td", {}, user.desc ?? ""),
+					h("td", {}, user.picture ?? ""),
+					h("td", {}, user.alive ? "true" : "false"),
+				]))),
 			]),
 		]),
 	]))
