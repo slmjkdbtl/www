@@ -3,7 +3,7 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import type { ServeOptions } from "bun"
+import type { ServeOptions, SocketAddress } from "bun"
 import * as sqlite from "bun:sqlite"
 
 export const isDev = Boolean(Bun.env["DEV"])
@@ -17,6 +17,7 @@ export type Req = {
 	arrayBuffer: () => Promise<ArrayBuffer>,
 	json<T = any>(): Promise<T>,
 	blob: () => Promise<Blob>,
+	ip: SocketAddress | null,
 }
 
 export type Res = {
@@ -81,16 +82,15 @@ export type Server = {
 	patch: (pat: string, handler: Handler) => void,
 	files: (route: string, root: string) => void,
 	dir: (route: string, root: string) => void,
+    stop: (closeActiveConnections?: boolean) => void,
 }
 
 export type ServerOpts = Omit<ServeOptions, "fetch">
 
+// TODO web sockets
 export function createServer(opts: ServerOpts = {}): Server {
 
-	const server = Bun.serve({
-		...opts,
-		fetch: fetch,
-	})
+	const server = Bun.serve({ ...opts, fetch })
 
 	// TODO: error handling
 	async function fetch(bunReq: Request): Promise<Response> {
@@ -100,6 +100,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 				method: bunReq.method,
 				url: new URL(bunReq.url),
 				headers: bunReq.headers,
+				ip: server.requestIP(bunReq),
 				params: {},
 				text: bunReq.text,
 				json: bunReq.json,
@@ -162,9 +163,9 @@ export function createServer(opts: ServerOpts = {}): Server {
 	}
 
 	const handlers: Registry<Handler> = new Registry()
-	const handle = (handler: Handler) => handlers.push(handler)
+	const use = (handler: Handler) => handlers.push(handler)
 
-	let errHandler: ErrorHandler = ({ req }, err) => {
+	let errHandler: ErrorHandler = ({ req, res }, err) => {
 		if (isDev) {
 			throw err
 		} else {
@@ -172,11 +173,12 @@ export function createServer(opts: ServerOpts = {}): Server {
 			console.error(`Request: ${req.method} ${req.url.pathname}`)
 			console.error("")
 			console.error(err)
-			return new Response("Internal server error", { status: 500 })
+			res.status = 500
+			res.sendText("Internal server error")
 		}
 	}
 
-	let notFoundHandler: NotFoundHandler = (req) => new Response("404", { status: 404 })
+	let notFoundHandler: NotFoundHandler = ({ res }) => res.sendText("404", { status: 404 })
 
 	function handleMatch(ctx: Ctx, pat: string, handler: Handler) {
 		const url = new URL(ctx.req.url)
@@ -184,30 +186,36 @@ export function createServer(opts: ServerOpts = {}): Server {
 		if (match) {
 			ctx.req.params = match
 			return handler(ctx)
+		} else {
+			ctx.next()
 		}
 	}
 
 	function genMethodHandler(method: string) {
 		return (pat: string, handler: Handler) => {
 			handlers.push((ctx) => {
-				if (ctx.req.method !== method) return
-				return handleMatch(ctx, pat, handler)
+				if (ctx.req.method === method) {
+					return handleMatch(ctx, pat, handler)
+				} else {
+					ctx.next()
+				}
 			})
 		}
 	}
 
 	return {
-		use: handle,
+		use: use,
 		error: (action: ErrorHandler) => errHandler = action,
 		notFound: (action: NotFoundHandler) => notFoundHandler = action,
-		match: (pat: string, handler: Handler) => handle((ctx) => handleMatch(ctx, pat, handler)),
+		match: (pat: string, handler: Handler) => use((ctx) => handleMatch(ctx, pat, handler)),
 		get: genMethodHandler("GET"),
 		post: genMethodHandler("POST"),
 		put: genMethodHandler("PUT"),
 		delete: genMethodHandler("DELETE"),
 		patch: genMethodHandler("PATCH"),
+		stop: server.stop,
 		files: (route = "", root = "") => {
-			return handle(({ req, res, next }) => {
+			return use(({ req, res, next }) => {
 				route = trimSlashes(route)
 				const pathname = trimSlashes(decodeURI(req.url.pathname))
 				if (!pathname.startsWith(route)) return next()
@@ -218,7 +226,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 			})
 		},
 		dir: (route = "", root = "") => {
-			handle(({ req, res, next }) => {
+			use(({ req, res, next }) => {
 				route = trimSlashes(route)
 				const pathname = trimSlashes(decodeURI(req.url.pathname))
 				if (!pathname.startsWith(route)) return next()

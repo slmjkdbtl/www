@@ -39,7 +39,7 @@ const usersTable = db.table<User>("user", {
 })
 
 // TODO: use table.js to update
-server.get("/", ({ res }) => {
+server.get("/", ({ req, res }) => {
 	const users = usersTable.select()
 	return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
 		h("head", {}, [
@@ -79,4 +79,18 @@ server.get("/", ({ res }) => {
 			]),
 		]),
 	]))
+})
+
+server.get("/err", () => {
+	throw new Error("yep")
+})
+
+server.error(({ res }, err) => {
+	res.status = 500
+	res.sendText(`something went wrong\n` + err)
+})
+
+server.notFound(({ res }) => {
+	res.status = 404
+	res.sendText("nothing here")
 })
