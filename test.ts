@@ -164,7 +164,7 @@ server.ws.onOpen((ws) => {
 
 server.use(dir("/dir", "."))
 
-server.use(route("GET", "/err", () => {
+server.use(route("GET", "/err", async () => {
 	throw new Error("yep")
 }))
 

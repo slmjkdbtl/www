@@ -380,7 +380,7 @@ export const route = overload2((pat: string, handler: Handler): Handler => {
 		const match = matchPath(pat, decodeURI(ctx.req.url.pathname))
 		if (match) {
 			ctx.req.params = match
-			handler(ctx)
+			return handler(ctx)
 		} else {
 			ctx.next()
 		}
@@ -388,7 +388,7 @@ export const route = overload2((pat: string, handler: Handler): Handler => {
 }, (method: string, pat: string, handler: Handler): Handler => {
 	return (ctx) => {
 		if (ctx.req.method.toLowerCase() === method.toLowerCase()) {
-			route(pat, handler)(ctx)
+			return route(pat, handler)(ctx)
 		} else {
 			ctx.next()
 		}
