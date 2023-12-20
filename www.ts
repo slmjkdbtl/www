@@ -1,5 +1,5 @@
 // helpers for the world wide web with Bun
-// TODO: interactive console
+// TODO: rate limiter
 
 import * as fs from "fs"
 import * as path from "path"
@@ -25,7 +25,7 @@ export type Req = {
 	json<T = any>(): Promise<T>,
 	formData: () => Promise<FormData>,
 	blob: () => Promise<Blob>,
-	ip: SocketAddress | null,
+	ip: string | null,
 }
 
 export type Res = {
@@ -202,11 +202,21 @@ export function createServer(opts: ServerOpts = {}): Server {
 	async function fetch(bunReq: Request): Promise<Response> {
 		return new Promise((resolve) => {
 			let done = false
+			let ip = bunReq.headers.get("X-Forwarded-For")
+				?? bunServer.requestIP(bunReq)?.address
+				?? null
+			const ipv6Prefix = "::ffff:"
+			if (ip?.startsWith(ipv6Prefix)) {
+				ip = ip.substring(ipv6Prefix.length)
+			}
+			if (ip === "::1") {
+				ip = "127.0.0.1"
+			}
 			const req: Req = {
 				method: bunReq.method,
 				url: new URL(bunReq.url),
 				headers: bunReq.headers,
-				ip: bunServer.requestIP(bunReq),
+				ip: ip,
 				params: {},
 				text: bunReq.text.bind(bunReq),
 				json: bunReq.json.bind(bunReq),
