@@ -23,6 +23,7 @@ export type Req = {
 	text: () => Promise<string>,
 	arrayBuffer: () => Promise<ArrayBuffer>,
 	json<T = any>(): Promise<T>,
+	formData: () => Promise<FormData>,
 	blob: () => Promise<Blob>,
 	ip: SocketAddress | null,
 }
@@ -86,7 +87,7 @@ export type Server = {
 	hostname: string,
 	port: number,
 	ws: {
-		clients: Registry<WebSocket>,
+		clients: Map<string, WebSocket>,
 		onMessage: (action: (ws: WebSocket, msg: string | Buffer) => void) => EventController,
 		onOpen: (action: (ws: WebSocket) => void) => EventController,
 		onClose: (action: (ws: WebSocket) => void) => EventController,
@@ -160,15 +161,21 @@ export function createEvent<Args extends any[] = any[]>() {
 }
 
 export type WebSocketData = {
-	id: number,
+	id: string,
 }
 
 // TODO: support arbituary data
 export type WebSocket = ServerWebSocket<WebSocketData>
 
+const isPromise = (input: any): input is Promise<any> => {
+	return input
+		&& typeof input.then === "function"
+		&& typeof input.catch === "function"
+}
+
 export function createServer(opts: ServerOpts = {}): Server {
 
-	const wsClients = new Registry<WebSocket>()
+	const wsClients = new Map<string, WebSocket>()
 	const wsEvents = {
 		message: createEvent<[WebSocket, string | Buffer]>(),
 		open: createEvent<[WebSocket]>(),
@@ -179,7 +186,8 @@ export function createServer(opts: ServerOpts = {}): Server {
 			wsEvents.message.trigger(ws, msg)
 		},
 		open: (ws) => {
-			const id = wsClients.push(ws)
+			const id = crypto.randomUUID()
+			wsClients.set(id, ws)
 			ws.data = {
 				id: id,
 			}
@@ -200,10 +208,11 @@ export function createServer(opts: ServerOpts = {}): Server {
 				headers: bunReq.headers,
 				ip: bunServer.requestIP(bunReq),
 				params: {},
-				text: bunReq.text,
-				json: bunReq.json,
-				arrayBuffer: bunReq.arrayBuffer,
-				blob: bunReq.blob,
+				text: bunReq.text.bind(bunReq),
+				json: bunReq.json.bind(bunReq),
+				arrayBuffer: bunReq.arrayBuffer.bind(bunReq),
+				formData: bunReq.formData.bind(bunReq),
+				blob: bunReq.blob.bind(bunReq),
 			}
 			const res: Res = {
 				headers: new Headers(),
@@ -260,7 +269,14 @@ export function createServer(opts: ServerOpts = {}): Server {
 				if (h) {
 					if (errHandler) {
 						try {
-							h(ctx)
+							const res = h(ctx)
+							if (isPromise(res)) {
+								res.catch((e) => {
+									if (errHandler) {
+										errHandler(ctx, e)
+									}
+								})
+							}
 						} catch (e) {
 							errHandler(ctx, e as Error)
 						}

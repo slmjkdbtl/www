@@ -14,8 +14,7 @@ console.log(`Listening on http://${server.hostname}:${server.port}`)
 const db = createDatabase("data/test.db")
 
 type User = {
-	// TODO: this should be ? when inserting, not ? when selecting
-	id?: number,
+	id: string,
 	name: string,
 	desc?: string,
 	picture?: string,
@@ -23,7 +22,7 @@ type User = {
 }
 
 const usersTable = db.table<User>("user", {
-	"id":       { type: "INTEGER", primaryKey: true, autoIncrement: true },
+	"id":       { type: "TEXT", primaryKey: true },
 	"name":     { type: "TEXT", unique: true, index: true },
 	"desc":     { type: "TEXT", allowNull: true },
 	"picture":  { type: "BLOB", allowNull: true },
@@ -33,6 +32,7 @@ const usersTable = db.table<User>("user", {
 	timeUpdated: true,
 	initData: [
 		{
+			id: crypto.randomUUID(),
 			name: "tga",
 			desc: "oh hi",
 			alive: true,
