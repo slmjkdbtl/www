@@ -202,7 +202,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 	async function fetch(bunReq: Request): Promise<Response> {
 		return new Promise((resolve) => {
 			let done = false
-			let ip = bunReq.headers.get("X-Forwarded-For")
+			let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
 				?? bunServer.requestIP(bunReq)?.address
 				?? null
 			const ipv6Prefix = "::ffff:"
