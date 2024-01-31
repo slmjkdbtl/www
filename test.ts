@@ -4,12 +4,16 @@ import {
 	css,
 	h,
 	js,
-	cron,
 	dir,
 	route,
+	cron,
 } from "./www"
 
-const server = createServer()
+cron("* * * * *", () => {
+	console.log(new Date())
+})
+
+const server = createServer({ port: 8000 })
 console.log(`Listening on http://${server.hostname}:${server.port}`)
 const db = createDatabase("data/test.db")
 
@@ -68,6 +72,7 @@ const styles = {
 // TODO: use table.js to update
 server.use(route("GET", "/", ({ req, res }) => {
 	const users = usersTable.select()
+	console.log(users)
 	return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
 		h("head", {}, [
 			// @ts-ignore
@@ -105,7 +110,7 @@ server.use(route("GET", "/chat", ({ res }) => {
 			h("p", { id: "username" }, ""),
 			h("input", { id: "input" }),
 			h("script", {}, `
-const ws = new WebSocket("ws://localhost:3000/ws")
+const ws = new WebSocket("ws://${server.hostname}:${server.port}/ws")
 const input = document.querySelector("#input")
 const messages = document.querySelector("#messages")
 const usernameEl = document.querySelector("#username")

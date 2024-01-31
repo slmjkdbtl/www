@@ -201,22 +201,28 @@ export function createServer(opts: ServerOpts = {}): Server {
 
 	async function fetch(bunReq: Request): Promise<Response> {
 		return new Promise((resolve) => {
+			function getIP() {
+				let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
+					?? bunServer.requestIP(bunReq)?.address
+				if (!ip) return null
+				const ipv6Prefix = "::ffff:"
+				// ipv4 in ipv6
+				if (ip?.startsWith(ipv6Prefix)) {
+					ip = ip.substring(ipv6Prefix.length)
+				}
+				const localhostIPs = new Set([
+					"127.0.0.1",
+					"::1",
+				])
+				if (localhostIPs.has(ip)) return null
+				return ip
+			}
 			let done = false
-			let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
-				?? bunServer.requestIP(bunReq)?.address
-				?? null
-			const ipv6Prefix = "::ffff:"
-			if (ip?.startsWith(ipv6Prefix)) {
-				ip = ip.substring(ipv6Prefix.length)
-			}
-			if (ip === "::1") {
-				ip = "127.0.0.1"
-			}
 			const req: Req = {
 				method: bunReq.method,
 				url: new URL(bunReq.url),
 				headers: bunReq.headers,
-				ip: ip,
+				ip: getIP(),
 				params: {},
 				text: bunReq.text.bind(bunReq),
 				json: bunReq.json.bind(bunReq),
@@ -249,7 +255,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 					this.send(JSON.stringify(content), opt)
 				},
 				sendFile(path, opt) {
-					if (!isFile(path)) return
+					if (!isFileSync(path)) return
 					const file = Bun.file(path)
 					if (file.size === 0) return
 					this.headers.append("Content-Type", file.type)
@@ -415,9 +421,9 @@ export function dir(route = "", root = ""): Handler {
 		const baseDir = "./" + trimSlashes(root)
 		const relativeURLPath = pathname.replace(new RegExp(`^${route}/?`), "")
 		const p = path.join(baseDir, relativeURLPath)
-		if (isFile(p)) {
+		if (isFileSync(p)) {
 			return res.sendFile(p)
-		} else if (isDir(p)) {
+		} else if (isDirSync(p)) {
 			const entries = fs.readdirSync(p)
 				.filter((entry) => !entry.startsWith("."))
 				.sort((a, b) => a > b ? -1 : 1)
@@ -426,9 +432,9 @@ export function dir(route = "", root = ""): Handler {
 			const dirs = []
 			for (const entry of entries) {
 				const pp = path.join(p, entry)
-				if (isDir(pp)) {
+				if (isDirSync(pp)) {
 					dirs.push(entry)
-				} else if (isFile(pp)) {
+				} else if (isFileSync(pp)) {
 					files.push(entry)
 				}
 			}
@@ -888,20 +894,20 @@ ${genWhereSQL(where, vars)}
 
 }
 
-function isFile(path: string) {
+export function trydo<T>(action: () => T, def: T) {
 	try {
-		return fs.statSync(path).isFile()
+		return action()
 	} catch {
-		return false
+		return def
 	}
 }
 
-function isDir(path: string) {
-	try {
-		return fs.statSync(path).isDirectory()
-	} catch {
-		return false
-	}
+export function isFileSync(path: string) {
+	return trydo(() => fs.statSync(path).isFile(), false)
+}
+
+export function isDirSync(path: string) {
+	return trydo(() => fs.statSync(path).isDirectory(), false)
 }
 
 export type ResponseOpts = {
@@ -956,14 +962,14 @@ export function h(tagname: string, attrs: Record<string, any>, children?: string
 				}
 				break
 			case "string":
-				html += ` ${k}="${escapeHTML(v)}"`
+				html += ` ${k}="${Bun.escapeHTML(v)}"`
 				break
 			case "number":
 				html += ` ${k}=${v}`
 				break
 			case "object":
 				const value = Array.isArray(v) ? v.join(" ") : style(v)
-				html += ` ${k}="${escapeHTML(value)}"`
+				html += ` ${k}="${Bun.escapeHTML(value)}"`
 				break
 		}
 	}
@@ -1107,15 +1113,6 @@ export function css(list: CSS, opts: CSSOpts = {}) {
 
 }
 
-export function escapeHTML(unsafe: string) {
-	return unsafe
-		.replace(/&/g, "&amp")
-		.replace(/</g, "&lt")
-		.replace(/>/g, "&gt")
-		.replace(/"/g, "&quot")
-		.replace(/'/g, "&#039")
-}
-
 function mapKeys<D>(obj: Record<string, D>, mapFn: (k: string) => string) {
 	return Object.keys(obj).reduce((result: Record<string, D>, key) => {
 		result[mapFn(key)] = obj[key]
@@ -1211,6 +1208,7 @@ export function csslib(opt: CSSLibOpts = {}) {
 // TODO: not global?
 const buildCache: Record<string, string> = {}
 
+// TODO: better error handling?
 export async function js(file: string) {
 	if (!isDev) {
 		if (buildCache[file]) {
@@ -1220,35 +1218,39 @@ export async function js(file: string) {
 	const res = await Bun.build({
 		entrypoints: [file],
 	})
-	if (res.outputs.length !== 1) {
-		throw new Error("Failed to build")
+	if (res.success) {
+		if (res.outputs.length !== 1) {
+			throw new Error(`Expected 1 output, found ${res.outputs.length}`)
+		}
+		const code = await res.outputs[0].text()
+		if (!isDev) {
+			buildCache[file] = code
+		}
+		return code
+	} else {
+		console.log(res.logs[0])
+		throw new Error("Failed to build js")
 	}
-	const code = await res.outputs[0].text()
-	if (!isDev) {
-		buildCache[file] = code
-	}
-	return code
 }
 
-export type CronTime = number | "*"
+export function jsData(name: string, data: any) {
+	const json = JSON.stringify(data)
+		.replaceAll("\\", "\\\\")
+		.replaceAll("'", "\\'")
+	return `window.${name} = JSON.parse('${json}')`
+}
 
-export function cron(
-	min: CronTime,
-	hour: CronTime,
-	date: CronTime,
-	month: CronTime,
-	day: CronTime,
-	action: () => void,
-) {
+export function cron(freq: string, action: () => void) {
 	let paused = false
+	const [min, hour, date, month, day] = freq.split(" ")
 	const id = setInterval(() => {
 		if (paused) return
 		const time = new Date()
-		if (month !== "*" && time.getMonth() + 1 !== month) return
-		if (date !== "*" && time.getDate() !== date) return
-		if (day !== "*" && time.getDay() !== day) return
-		if (hour !== "*" && time.getHours() !== hour) return
-		if (min !== "*" && time.getMinutes() !== min) return
+		if (month !== "*" && time.getMonth() + 1 !== Number(month)) return
+		if (date !== "*" && time.getDate() !== Number(date)) return
+		if (day !== "*" && time.getDay() !== Number(day)) return
+		if (hour !== "*" && time.getHours() !== Number(hour)) return
+		if (min !== "*" && time.getMinutes() !== Number(min)) return
 		action()
 	}, 1000 * 60)
 	return {
@@ -1261,78 +1263,5 @@ export function cron(
 		set paused(p) {
 			paused = p
 		},
-	}
-}
-
-function exec(cmd: string | string[], opts: Parameters<typeof Bun.spawn>[1] = {}) {
-	return Bun.spawnSync(Array.isArray(cmd) ? cmd : cmd.split(" "), {
-		stdin: "inherit",
-		stdout: "inherit",
-		stderr: "inherit",
-		...opts,
-	})
-}
-
-const cmds: Record<string, (...args: any[]) => void> = {
-	dev: () => {
-		exec("bun --watch main.ts", {
-			env: { ...process.env, "DEV": "1" },
-		})
-	},
-	deploy: (host: string, dir: string, service: string) => {
-		host = host ?? Bun.env["DEPLOY_HOST"]
-		dir = dir ?? Bun.env["DEPLOY_DIR"]
-		service = service ?? Bun.env["DEPLOY_SERVICE"]
-		if (!host || !dir) {
-			console.error("Host and directory required for deployment!")
-			console.log("")
-			console.log(`
-USAGE
-
-    # Copy project to server and optionally restart systemd service
-    $ deploy <host> <dir> <service>
-
-    # Use $DEPLOY_HOST, $DEPLOY_DIR and $DEPLOY_SERVICE from env
-    $ deploy
-			`.trim())
-			return
-		}
-		console.log(`copying project folder to ${host}:${dir}`)
-		exec([
-			"rsync",
-			"-av", "--delete",
-			"--exclude", ".DS_Store",
-			"--exclude", ".git",
-			"--exclude", "data",
-			"--exclude", "node_modules",
-			".", `${host}:${dir}`,
-		])
-		if (service) {
-			console.log(`restarting service ${service}`)
-			exec(`ssh -t ${host} sudo systemctl restart ${service}`)
-		}
-	},
-}
-
-const cmd = process.argv[2]
-
-if (cmd) {
-	if (cmds[cmd]) {
-		cmds[cmd](...process.argv.slice(3))
-	} else {
-		console.error(`Command not found: ${cmd}`)
-		console.log("")
-		console.log(`
-USAGE
-
-    # Start dev server
-    $ bun www.js dev
-
-    # Copy project to server and optionally restart systemd service
-    $ bun www.js deploy <host> <dir> <service>
-
-    # Deploy using $DEPLOY_HOST, $DEPLOY_DIR and $DEPLOY_SERVICE from env
-    $ bun www.js deploy
-		`.trim())
 	}
 }
