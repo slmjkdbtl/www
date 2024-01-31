@@ -9,7 +9,7 @@ import {
 	cron,
 } from "./www"
 
-cron("* * * * *", () => {
+cron("*/2 * * * *", () => {
 	console.log(new Date())
 })
 

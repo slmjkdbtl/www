@@ -334,7 +334,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 			onClose: (action) => wsEvents.close.add(action),
 			publish: bunServer.publish.bind(bunServer),
 			// TODO: option to exclude self
-			broadcast: (data: string | BufferSource, compress?: boolean) => {
+			broadcast: (data: string | Bun.BufferSource, compress?: boolean) => {
 				wsClients.forEach((client) => {
 					client.send(data, compress)
 				})
@@ -1240,22 +1240,54 @@ export function jsData(name: string, data: any) {
 	return `window.${name} = JSON.parse('${json}')`
 }
 
-export function cron(freq: string, action: () => void) {
+export type CronUnit = string
+export type CronDef =
+	| `${CronUnit} ${CronUnit} ${CronUnit} ${CronUnit} ${CronUnit}`
+	| "yearly"
+	| "monthly"
+	| "weekly"
+	| "daily"
+	| "hourly"
+	| "minutely"
+
+export function cron(freq: CronDef, action: () => void) {
+	if (freq === "yearly") return cron("0 0 1 1 *", action)
+	if (freq === "monthly") return cron("0 0 1 * *", action)
+	if (freq === "weekly") return cron("0 0 * * 0", action)
+	if (freq === "daily") return cron("0 0 * * *", action)
+	if (freq === "hourly") return cron("0 * * * *", action)
+	if (freq === "minutely") return cron("* * * * *", action)
 	let paused = false
-	const [min, hour, date, month, day] = freq.split(" ")
-	const id = setInterval(() => {
+	const [min, hour, date, month, day] = freq
+		.split(" ")
+		.map((def) => def === "*" ? "*" : def.split(","))
+	function match(n: number, pats: "*" | string[]) {
+		if (pats === "*") return true
+		for (const pat of pats) {
+			if (Number(pat) === n) return true
+			if (pat.startsWith("*/")) {
+				const interval = Number(pat.substring(2))
+				if (n % interval === 0) return true
+			}
+		}
+		return false
+	}
+	function run() {
 		if (paused) return
 		const time = new Date()
-		if (month !== "*" && time.getMonth() + 1 !== Number(month)) return
-		if (date !== "*" && time.getDate() !== Number(date)) return
-		if (day !== "*" && time.getDay() !== Number(day)) return
-		if (hour !== "*" && time.getHours() !== Number(hour)) return
-		if (min !== "*" && time.getMinutes() !== Number(min)) return
+		if (!match(time.getMonth() + 1, month)) return
+		if (!match(time.getDate(), date)) return
+		if (!match(time.getDay(), day)) return
+		if (!match(time.getHours(), hour)) return
+		if (!match(time.getMinutes(), min)) return
 		action()
-	}, 1000 * 60)
+	}
+	const timeout = setInterval(run, 1000 * 60)
+	run()
 	return {
+		action: action,
 		cancel: () => {
-			clearInterval(id)
+			clearInterval(timeout)
 		},
 		get paused() {
 			return paused
