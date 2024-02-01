@@ -9,12 +9,24 @@ import {
 	cron,
 } from "./www"
 
-cron("*/2 * * * *", () => {
+const monthDiff = (d1: Date, d2: Date) => {
+	let months
+	months = (d2.getFullYear() - d1.getFullYear()) * 12
+	months -= d1.getMonth()
+	months += d2.getMonth()
+	return months <= 0 ? 0 : months
+}
+
+const now = new Date()
+const then = new Date("2013-02-20T12:01:04.753Z")
+console.log(monthDiff(then, now))
+
+cron("* * * * *", () => {
 	console.log(new Date())
 })
 
 const server = createServer({ port: 8000 })
-console.log(`Listening on http://${server.hostname}:${server.port}`)
+console.log(`Listening on ${server.url.toString()}`)
 const db = createDatabase("data/test.db")
 
 type User = {

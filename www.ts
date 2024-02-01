@@ -85,6 +85,7 @@ export type Server = {
 	notFound: (action: NotFoundHandler) => void,
     stop: (closeActiveConnections?: boolean) => void,
 	hostname: string,
+	url: URL,
 	port: number,
 	ws: {
 		clients: Map<string, WebSocket>,
@@ -313,6 +314,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 		...opts,
 		websocket,
 		fetch,
+		development: isDev,
 	})
 
 	const handlers: Registry<Handler> = new Registry()
@@ -326,6 +328,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 		notFound: (action: NotFoundHandler) => notFoundHandler = action,
 		stop: bunServer.stop.bind(bunServer),
 		hostname: bunServer.hostname,
+		url: bunServer.url,
 		port: bunServer.port,
 		ws: {
 			clients: wsClients,
@@ -1250,45 +1253,44 @@ export type CronDef =
 	| "hourly"
 	| "minutely"
 
-export function cron(freq: CronDef, action: () => void) {
-	if (freq === "yearly") return cron("0 0 1 1 *", action)
-	if (freq === "monthly") return cron("0 0 1 * *", action)
-	if (freq === "weekly") return cron("0 0 * * 0", action)
-	if (freq === "daily") return cron("0 0 * * *", action)
-	if (freq === "hourly") return cron("0 * * * *", action)
-	if (freq === "minutely") return cron("* * * * *", action)
+const real = (n: any) => n !== undefined && n !== null && !isNaN(n)
+
+// TODO: support */n intervals
+export function cron(rule: CronDef, action: () => void) {
+	if (rule === "yearly") return cron("0 0 1 1 *", action)
+	if (rule === "monthly") return cron("0 0 1 * *", action)
+	if (rule === "weekly") return cron("0 0 * * 0", action)
+	if (rule === "daily") return cron("0 0 * * *", action)
+	if (rule === "hourly") return cron("0 * * * *", action)
+	if (rule === "minutely") return cron("* * * * *", action)
 	let paused = false
-	const [min, hour, date, month, day] = freq
+	const startTime = new Date()
+	const [min, hour, date, month, day] = rule
 		.split(" ")
-		.map((def) => def === "*" ? "*" : def.split(","))
-	function match(n: number, pats: "*" | string[]) {
-		if (pats === "*") return true
-		for (const pat of pats) {
-			if (Number(pat) === n) return true
-			if (pat.startsWith("*/")) {
-				const interval = Number(pat.substring(2))
-				if (n % interval === 0) return true
+		.map((def) => def === "*" ? "*" : new Set(def.split(",").map(Number).filter(real)))
+	const [minInt, hourInt, dateInt, monthInt, dayInt] = rule.split(" ").map((r, i) => {
+		return r.split(",").map((chunk) => {
+			if (chunk.startsWith("*/")) {
+				return Number(chunk.substring(2))
 			}
-		}
-		return false
-	}
+		}).filter(real)
+	})
 	function run() {
 		if (paused) return
-		const time = new Date()
-		if (!match(time.getMonth() + 1, month)) return
-		if (!match(time.getDate(), date)) return
-		if (!match(time.getDay(), day)) return
-		if (!match(time.getHours(), hour)) return
-		if (!match(time.getMinutes(), min)) return
+		const now = new Date()
+		const elapsed = new Date(now.getTime() - startTime.getTime())
+		if (month !== "*" && !month.has(now.getMonth() + 1)) return
+		if (date !== "*" && !date.has(now.getDate())) return
+		if (day !== "*" && !day.has(now.getDay())) return
+		if (hour !== "*" && !hour.has(now.getHours())) return
+		if (min !== "*" && !min.has(now.getMinutes())) return
 		action()
 	}
 	const timeout = setInterval(run, 1000 * 60)
 	run()
 	return {
 		action: action,
-		cancel: () => {
-			clearInterval(timeout)
-		},
+		cancel: () => clearInterval(timeout),
 		get paused() {
 			return paused
 		},
