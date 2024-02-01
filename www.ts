@@ -1123,6 +1123,13 @@ function mapKeys<D>(obj: Record<string, D>, mapFn: (k: string) => string) {
 	}, {})
 }
 
+function mapValues<A, B>(obj: Record<string, A>, mapFn: (v: A) => B) {
+	return Object.keys(obj).reduce((result: Record<string, B>, key) => {
+		result[key] = mapFn(obj[key])
+		return result
+	}, {})
+}
+
 export type CSSLibOpts = {
 	breakpoints?: Record<string, number>,
 }
@@ -1220,6 +1227,9 @@ export async function js(file: string) {
 	}
 	const res = await Bun.build({
 		entrypoints: [file],
+		minify: !isDev,
+		sourcemap: isDev ? "inline" : "none",
+		target: "browser",
 	})
 	if (res.success) {
 		if (res.outputs.length !== 1) {
@@ -1244,7 +1254,7 @@ export function jsData(name: string, data: any) {
 }
 
 export type CronUnit = string
-export type CronDef =
+export type CronRule =
 	| `${CronUnit} ${CronUnit} ${CronUnit} ${CronUnit} ${CronUnit}`
 	| "yearly"
 	| "monthly"
@@ -1256,7 +1266,7 @@ export type CronDef =
 const real = (n: any) => n !== undefined && n !== null && !isNaN(n)
 
 // TODO: support */n intervals
-export function cron(rule: CronDef, action: () => void) {
+export function cron(rule: CronRule, action: () => void) {
 	if (rule === "yearly") return cron("0 0 1 1 *", action)
 	if (rule === "monthly") return cron("0 0 1 * *", action)
 	if (rule === "weekly") return cron("0 0 * * 0", action)
@@ -1264,21 +1274,12 @@ export function cron(rule: CronDef, action: () => void) {
 	if (rule === "hourly") return cron("0 * * * *", action)
 	if (rule === "minutely") return cron("* * * * *", action)
 	let paused = false
-	const startTime = new Date()
 	const [min, hour, date, month, day] = rule
 		.split(" ")
 		.map((def) => def === "*" ? "*" : new Set(def.split(",").map(Number).filter(real)))
-	const [minInt, hourInt, dateInt, monthInt, dayInt] = rule.split(" ").map((r, i) => {
-		return r.split(",").map((chunk) => {
-			if (chunk.startsWith("*/")) {
-				return Number(chunk.substring(2))
-			}
-		}).filter(real)
-	})
 	function run() {
 		if (paused) return
 		const now = new Date()
-		const elapsed = new Date(now.getTime() - startTime.getTime())
 		if (month !== "*" && !month.has(now.getMonth() + 1)) return
 		if (date !== "*" && !date.has(now.getDate())) return
 		if (day !== "*" && !day.has(now.getDay())) return

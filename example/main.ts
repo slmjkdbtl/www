@@ -4,22 +4,11 @@ import {
 	css,
 	h,
 	js,
+	jsData,
 	dir,
 	route,
 	cron,
-} from "./www"
-
-const monthDiff = (d1: Date, d2: Date) => {
-	let months
-	months = (d2.getFullYear() - d1.getFullYear()) * 12
-	months -= d1.getMonth()
-	months += d2.getMonth()
-	return months <= 0 ? 0 : months
-}
-
-const now = new Date()
-const then = new Date("2013-02-20T12:01:04.753Z")
-console.log(monthDiff(then, now))
+} from "./../www"
 
 cron("* * * * *", () => {
 	console.log(new Date())
@@ -82,7 +71,7 @@ const styles = {
 }
 
 // TODO: use table.js to update
-server.use(route("GET", "/", ({ req, res }) => {
+server.use(route("GET", "/", async ({ req, res }) => {
 	const users = usersTable.select()
 	console.log(users)
 	return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
@@ -105,6 +94,12 @@ server.use(route("GET", "/", ({ req, res }) => {
 					h("td", {}, user.alive ? "true" : "false"),
 				]))),
 			]),
+			h("script", {}, jsData("DATA", {
+				name: "tga",
+				age: 25,
+				tool: "saxophone",
+			})),
+			h("script", {}, await js("client.ts")),
 		]),
 	]))
 }))
