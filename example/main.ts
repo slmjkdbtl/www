@@ -2,6 +2,7 @@ import {
 	createServer,
 	createDatabase,
 	css,
+	csslib,
 	h,
 	js,
 	jsData,
@@ -9,6 +10,10 @@ import {
 	route,
 	cron,
 } from "./../www"
+
+import * as crypto from "crypto"
+
+const SALT_LENGTH = 16
 
 cron("* * * * *", () => {
 	console.log(new Date())
@@ -21,28 +26,26 @@ const db = createDatabase("data/test.db")
 type User = {
 	id: string,
 	name: string,
-	desc?: string,
-	picture?: string,
+	password: string,
+	salt: string,
 	alive: boolean,
+	power: number,
+	age: number,
+	picture?: Uint8Array,
 }
 
 const usersTable = db.table<User>("user", {
 	"id":       { type: "TEXT", primaryKey: true },
 	"name":     { type: "TEXT", unique: true, index: true },
-	"desc":     { type: "TEXT", allowNull: true },
+	"password": { type: "TEXT" },
+	"salt":     { type: "TEXT" },
 	"picture":  { type: "BLOB", allowNull: true },
 	"alive":    { type: "BOOLEAN" },
+	"age":      { type: "INTEGER" },
+	"power":    { type: "REAL" },
 }, {
 	timeCreated: true,
 	timeUpdated: true,
-	initData: [
-		{
-			id: crypto.randomUUID(),
-			name: "tga",
-			desc: "oh hi",
-			alive: true,
-		},
-	]
 })
 
 const styles = {
@@ -70,28 +73,80 @@ const styles = {
 	],
 }
 
-// TODO: use table.js to update
+type FormField = {
+	name: string,
+	[k: string]: any,
+}
+type FormOpts = {
+	action: string,
+	endpoint: string,
+	method: string,
+	fields: FormField[],
+}
+
 server.use(route("GET", "/", async ({ req, res }) => {
 	const users = usersTable.select()
 	console.log(users)
+	const field = (name: string, input: Record<string, any> = {}) => {
+		return h("label", { class: "hstack g4" }, [
+			name,
+			h("input", { ...input, name: name }),
+		])
+	}
+	const form = (opts: FormOpts) => {
+		return h("form", {
+			class: "vstack g4",
+			enctype: "multipart/form-data",
+			action: opts.endpoint,
+			method: opts.method,
+		}, [
+			...(opts.fields ?? []).map((f) => field(f.name, f)),
+			h("input", { type: "submit", value: opts.action }),
+		])
+	}
 	return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
 		h("head", {}, [
 			// @ts-ignore
 			h("style", {}, css(styles)),
+			h("style", {}, csslib()),
 		]),
 		h("body", {}, [
+			h("div", { class: "hstack g8" }, [
+				form({
+					endpoint: "/form/login",
+					method: "GET",
+					action: "log in",
+					fields: [
+						{ name: "name", required: true, },
+						{ name: "password", type: "password", required: "true" },
+					],
+				}),
+				form({
+					endpoint: "/form/signup",
+					method: "POST",
+					action: "sign up",
+					fields: [
+						{ name: "name", required: true, },
+						{ name: "password", type: "password", required: true, },
+						{ name: "picture", type: "file" },
+						{ name: "alive", type: "checkbox", checked: true, },
+						{ name: "power", type: "number", required: true, },
+						{ name: "age", type: "number", min: 0, required: true, },
+					],
+				}),
+			]),
 			h("table", {}, [
 				h("tr", {}, [
 					h("th", {}, "name"),
-					h("th", {}, "desc"),
-					h("th", {}, "picture"),
 					h("th", {}, "alive"),
+					h("th", {}, "age"),
+					h("th", {}, "power"),
 				]),
 				...(users.map((user) => h("tr", {}, [
 					h("td", {}, user.name),
-					h("td", {}, user.desc ?? ""),
-					h("td", {}, user.picture ?? ""),
 					h("td", {}, user.alive ? "true" : "false"),
+					h("td", {}, user.age + ""),
+					h("td", {}, user.power + ""),
 				]))),
 			]),
 			h("script", {}, jsData("DATA", {
@@ -102,6 +157,75 @@ server.use(route("GET", "/", async ({ req, res }) => {
 			h("script", {}, await js("client.ts")),
 		]),
 	]))
+}))
+
+async function getFormFileData(form: FormData, key: string) {
+	const f = form.get(key)
+	if (f instanceof Blob) {
+		return new Uint8Array(await f.arrayBuffer())
+	}
+}
+
+server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
+	const id = crypto.randomUUID()
+	const form = await req.formData()
+	const required = [
+		"name",
+		"password",
+		"power",
+		"age",
+	]
+	console.log(req.url.pathname, "received form data", form)
+	const pic = await getFormFileData(form, "picture")
+	const errorPage = (msg: string) => {
+		return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
+			h("head", {}, [
+				h("title", {}, "error"),
+				// @ts-ignore
+				h("style", {}, css(styles)),
+				h("style", {}, csslib()),
+			]),
+			h("body", {}, [
+				h("p", {}, msg),
+				h("a", { href: "/" }, "back to home"),
+			]),
+		]), { status: 400 })
+	}
+	for (const r of required) {
+		if (!form.get(r)) {
+			return errorPage("bad input")
+		}
+	}
+	const name = form.get("name") as string
+	const user = usersTable.find({
+		"name": name,
+	})
+	if (user) return errorPage(`user "${name}" already exists`)
+	const pass = form.get("password") as string
+	const salt = crypto.randomBytes(SALT_LENGTH).toString("hex")
+	const hash = crypto.pbkdf2Sync(pass, salt, 1000, 64, "sha256").toString("hex")
+	const power = Number(form.get("power"))
+	if (isNaN(power)) return errorPage(`invalid value for "power"`)
+	const age = Number(form.get("age"))
+	if (isNaN(age)) return errorPage(`invalid value for "age"`)
+	const alive = form.get("alive") === "on"
+	usersTable.insert({
+		"id": id,
+		"name": name,
+		"salt": salt,
+		"password": hash,
+		"power": power,
+		"age": age,
+		"alive": alive,
+		"picture": pic ?? undefined,
+	})
+	res.redirect("/")
+}))
+
+server.use(route("GET", "/form/login", async ({ req, res, next }) => {
+	const form = await req.formData()
+	console.log(form)
+	res.redirect("/")
 }))
 
 server.use(route("GET", "/chat", ({ res }) => {

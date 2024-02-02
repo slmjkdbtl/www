@@ -579,7 +579,7 @@ export type TableOpts<D> = {
 	timeCreated?: boolean,
 	timeUpdated?: boolean,
 	paranoid?: boolean,
-	initData?: D[],
+	initData?: D[] | (() => D[]),
 }
 
 // TODO: D depends on timeCreated, timeUpdated and paranoid
