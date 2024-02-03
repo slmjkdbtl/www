@@ -25,7 +25,8 @@ export type Req = {
 	json<T = any>(): Promise<T>,
 	formData: () => Promise<FormData>,
 	blob: () => Promise<Blob>,
-	ip: string | null,
+	getIP: () => string | null,
+	getCookies: () => Record<string, string>,
 }
 
 export type Res = {
@@ -202,44 +203,55 @@ export function createServer(opts: ServerOpts = {}): Server {
 
 	async function fetch(bunReq: Request): Promise<Response> {
 		return new Promise((resolve) => {
-			function getIP() {
-				let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
-					?? bunServer.requestIP(bunReq)?.address
-				if (!ip) return null
-				const ipv6Prefix = "::ffff:"
-				// ipv4 in ipv6
-				if (ip?.startsWith(ipv6Prefix)) {
-					ip = ip.substring(ipv6Prefix.length)
-				}
-				const localhostIPs = new Set([
-					"127.0.0.1",
-					"::1",
-				])
-				if (localhostIPs.has(ip)) return null
-				return ip
-			}
 			let done = false
 			const req: Req = {
 				method: bunReq.method,
 				url: new URL(bunReq.url),
 				headers: bunReq.headers,
-				ip: getIP(),
 				params: {},
 				text: bunReq.text.bind(bunReq),
 				json: bunReq.json.bind(bunReq),
 				arrayBuffer: bunReq.arrayBuffer.bind(bunReq),
 				formData: bunReq.formData.bind(bunReq),
 				blob: bunReq.blob.bind(bunReq),
+				getIP: () => {
+					let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
+						?? bunServer.requestIP(bunReq)?.address
+					if (!ip) return null
+					const ipv6Prefix = "::ffff:"
+					// ipv4 in ipv6
+					if (ip?.startsWith(ipv6Prefix)) {
+						ip = ip.substring(ipv6Prefix.length)
+					}
+					const localhostIPs = new Set([
+						"127.0.0.1",
+						"::1",
+					])
+					if (localhostIPs.has(ip)) return null
+					return ip
+				},
+				getCookies: () => {
+					const str = bunReq.headers.get("Cookie")
+					if (!str) return {}
+					const cookies: Record<string, string> = {}
+					for (const c of str.split(";")) {
+						const [k, v] = c.split("=")
+						cookies[k.trim()] = v.trim()
+					}
+					return cookies
+				},
 			}
 			const res: Res = {
 				headers: new Headers(),
 				status: 200,
-				send(data, opt) {
+				send(data, opt = {}) {
 					if (done) return
 					resolve(new Response(data, {
-						headers: this.headers,
-						status: this.status,
-						...opt,
+						headers: {
+							...this.headers.toJSON(),
+							...(opt.headers ?? {}),
+						},
+						status: opt.status ?? this.status,
 					}))
 					done = true
 				},
@@ -918,17 +930,6 @@ export type ResponseOpts = {
 	headers?: Record<string, string>,
 }
 
-export function getCookies(req: Request) {
-	const str = req.headers.get("Cookie")
-	if (!str) return {}
-	const cookies: Record<string, string> = {}
-	for (const c of str.split(";")) {
-		const [k, v] = c.split("=")
-		cookies[k.trim()] = v.trim()
-	}
-	return cookies
-}
-
 export function kvList(props: Record<string, string | boolean>) {
 	return Object.entries(props)
 		.filter(([k, v]) => v)
@@ -948,6 +949,13 @@ export async function getReqData(req: Request) {
 		return json
 	} else {
 		return await req.json()
+	}
+}
+
+export async function getFormBlobData(form: FormData, key: string) {
+	const f = form.get(key)
+	if (f instanceof Blob) {
+		return new Uint8Array(await f.arrayBuffer())
 	}
 }
 
