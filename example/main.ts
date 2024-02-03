@@ -98,10 +98,15 @@ const chatTable = db.table<DBChat>("chat", {
 const styles = {
 	"*": {
 		"box-sizing": "border-box",
+		"margin": "0",
+		"padding": "0",
 	},
 	"html": {
 		"font-family": "Monospace",
 		"font-size": "16px",
+	},
+	"body": {
+		"padding": "16px",
 	},
 	"@keyframes": {
 		"bounce": {
@@ -146,10 +151,36 @@ server.use(route("GET", "/", async ({ req, res }) => {
 			action: opts.endpoint,
 			method: opts.method,
 		}, [
-			...(opts.fields ?? []).map((f) => field(f.name, f)),
+			...(opts.fields ?? []).map((f) => {
+				if (f.type === "textarea") {
+					return h("textarea", { ...f }, "")
+				} else {
+					return field(f.name, f)
+				}
+			}),
 			h("input", { type: "submit", value: opts.action }),
 		])
 	}
+	const posts = postTable.select().reverse()
+	const postsHTML = h("div", { class: "vstach g4" }, [
+		...posts.map((p) => {
+			const user = userTable.find({ id: p["user_id"] })
+			return h("div", { class: "vstack g4" }, [
+				h("div", { class: "hstack g4 align-center" }, [
+					h("img", {
+						src: `/pic/${user["id"]}`,
+						style: {
+							"width": "24px",
+							"height": "24px",
+						},
+					}),
+					h("p", {}, user["name"]),
+				]),
+				h("p", {}, p["content"]),
+				h("p", { style: { color: "#666" } }, p["time_created"]),
+			])
+		})
+	])
 	if (user) {
 		return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
 			h("head", {}, [
@@ -159,8 +190,21 @@ server.use(route("GET", "/", async ({ req, res }) => {
 				h("style", {}, csslib()),
 			]),
 			h("body", {}, [
-				h("p", {}, `Hi! ${user.name}`),
-				h("a", { href: "/logout" }, "log out"),
+				h("div", { class: "vstack g8" }, [
+					h("div", { class: "hstack g8", }, [
+						h("span", {}, `Hi! ${user.name}`),
+						h("a", { href: "/logout" }, "log out"),
+					]),
+					form({
+						endpoint: "/form/post",
+						method: "POST",
+						action: "post",
+						fields: [
+							{ name: "content", type: "textarea", required: "true" },
+						],
+					}),
+					postsHTML,
+				]),
 			]),
 		]))
 	} else {
@@ -196,6 +240,7 @@ server.use(route("GET", "/", async ({ req, res }) => {
 						],
 					}),
 				]),
+				postsHTML,
 				h("script", {}, jsData("DATA", {
 					// TODO
 				})),
@@ -286,6 +331,15 @@ function getSession(req: Req) {
 	}
 }
 
+function createSession(user: User) {
+	const sessionID = crypto.randomUUID()
+	sessionTable.insert({
+		"id": sessionID,
+		"user_id": user.id,
+	})
+	return sessionID
+}
+
 server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 	const form = await req.formData()
 	const required = [
@@ -327,15 +381,11 @@ server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 		"alive": alive,
 		"picture": pic ?? undefined,
 	})
-	const sessionID = crypto.randomUUID()
-	sessionTable.insert({
-		"id": sessionID,
-		"user_id": id,
-	})
+	const sessionID = createSession(user)
 	return res.redirect("/", {
 		headers: {
 			// TODO: Expires
-			"set-cookie": kvList({
+			"Set-Cookie": kvList({
 				"session": sessionID,
 				"HttpOnly": true,
 				"Path": "/",
@@ -371,15 +421,11 @@ server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 	const hash = crypto.pbkdf2Sync(pass, salt, 1000, 64, "sha256").toString("hex")
 	if (hash !== user.password)
 		return res.sendHTML(errorPage(`incorrect password`), { status: 400 })
-	const sessionID = crypto.randomUUID()
-	sessionTable.insert({
-		"id": sessionID,
-		"user_id": user.id,
-	})
+	const sessionID = createSession(user)
 	return res.redirect("/", {
 		headers: {
 			// TODO: Expires
-			"set-cookie": kvList({
+			"Set-Cookie": kvList({
 				"session": sessionID,
 				"HttpOnly": true,
 				"Path": "/",
@@ -387,6 +433,23 @@ server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 			}),
 		}
 	})
+}))
+
+server.use(route("POST", "/form/post", async ({ req, res, next }) => {
+	const session = getSession(req)
+	if (!session)
+		return res.sendHTML(errorPage("please log in first"), { status: 400 })
+	const form = await req.formData()
+	const content = form.get("content") as string
+	if (!content)
+		return res.sendHTML(errorPage("content cannot be empty"), { status: 400 })
+	const id = crypto.randomUUID()
+	postTable.insert({
+		"id": id,
+		"user_id": session.user.id,
+		"content": content,
+	})
+	return res.redirect("/")
 }))
 
 server.use(route("GET", "/chat", ({ res }) => {
