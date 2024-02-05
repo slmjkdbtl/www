@@ -556,8 +556,8 @@ export type CreateDatabaseOpts = {
 	wal?: boolean,
 }
 
-export type SQLVars = Record<string, string | number | boolean>
-export type SQLData = Record<string, string | number | boolean>
+export type SQLVars = Record<string, string | number | boolean | Uint8Array>
+export type SQLData = Record<string, string | number | boolean | Uint8Array>
 export type WhereCondition = Record<string, string | { value: string, op: string }>
 export type OrderCondition = {
 	columns: string[],
@@ -573,12 +573,31 @@ export type SelectOpts = {
 	limit?: LimitCondition,
 }
 
+export type JoinTable<D> = {
+	table: Table<D>,
+	columns?: "*" | string[],
+	on: string,
+	where?: WhereCondition,
+}
+
+export type JoinType =
+	| "inner"
+	| "left"
+	| "right"
+	| "full"
+
+export type JoinSelectOpts = {
+	type?: JoinType,
+	distinct?: boolean,
+}
+
 export type TableSchema = Record<string, ColumnDef>
 
 export type Table<D> = {
+	name: string,
 	select: (opts?: SelectOpts) => D[],
 	insert: (data: D) => void,
-	update: (data: D, where: WhereCondition) => void,
+	update: (data: Partial<D>, where: WhereCondition) => void,
 	delete: (where: WhereCondition) => void,
 	find: (where: WhereCondition) => D,
 	findAll: (where: WhereCondition) => D[],
@@ -591,19 +610,26 @@ export type TableOpts<D> = {
 	timeCreated?: boolean,
 	timeUpdated?: boolean,
 	paranoid?: boolean,
-	initData?: D[] | (() => D[]),
+	initData?: D[],
 }
 
-// TODO: D depends on timeCreated, timeUpdated and paranoid
+type TableData<D extends SQLData, O extends TableOpts<D>> =
+	(O extends { timeCreated: true } ? D & { time_created?: string } : D)
+	& (O extends { timeUpdated: true } ? D & { time_updated?: string } : D)
+	& (O extends { paranoid: true } ? D & { time_deleted?: string } : D)
+
+// https://discord.com/channels/508357248330760243/1203901900844572723
+// typescript has no partial type inference...
 export type Database = {
-	table: <D extends Record<string, any>>(
+	table: <D extends SQLData, O extends TableOpts<D> = TableOpts<D>>(
 		name: string,
 		schema: TableSchema,
-		opts?: TableOpts<D>,
-	) => Table<D>,
+		opts?: O,
+	) => Table<TableData<D, O>>,
 	transaction: (action: () => void) => void,
 	close: () => void,
     serialize: (name?: string) => Buffer,
+	joinSelect<D1, D2>(t1: JoinTable<D1>, t2: JoinTable<D2>, opts?: JoinSelectOpts): Array<D1 & D2>,
 }
 
 // TODO: support views
@@ -860,12 +886,12 @@ ${genValuesSQL(data, vars)}
 			`).run(vars)
 		}
 
-		function update(data: D, where: WhereCondition) {
+		function update(data: Partial<D>, where: WhereCondition) {
 			const vars = {}
 			const keys = Object.keys(data)
 			compile(`
 UPDATE ${tableName}
-${genSetSQL(data, vars)}
+${genSetSQL(data as SQLData, vars)}
 ${genWhereSQL(where, vars)}
 			`).run(vars)
 		}
@@ -887,6 +913,7 @@ ${genWhereSQL(where, vars)}
 		}
 
 		return {
+			name: tableName,
 			select,
 			find,
 			findAll,
@@ -900,11 +927,30 @@ ${genWhereSQL(where, vars)}
 
 	}
 
+	function joinSelect<D1, D2>(t1: JoinTable<D1>, t2: JoinTable<D2>, opts: JoinSelectOpts = {}) {
+		const vars = {}
+		const colNames = (table: Table<any>, cols: string[] | "*" = "*") => {
+			const c = cols === "*" ? ["*"] : cols
+			return c
+				.filter((name) => name)
+				.map((name) => `${table.name}.${name}`).join(", ")
+		}
+		// TODO: where
+		const items = compile(`
+SELECT${opts.distinct ? " DISTINCT" : ""} ${colNames(t1.table, t1.columns)}, ${colNames(t2.table, t2.columns)}
+FROM ${t1.table.name} JOIN ${t2.table.name}
+ON ${t1.table.name}.${t1.on} = ${t2.table.name}.${t2.on}
+		`).all(vars) as (D1 & D2)[] ?? []
+		// TODO: transform boolean
+		return items
+	}
+
 	return {
 		table,
 		transaction,
 		close: bdb.close,
 		serialize: bdb.serialize,
+		joinSelect,
 	}
 
 }
@@ -949,6 +995,20 @@ export async function getReqData(req: Request) {
 		return json
 	} else {
 		return await req.json()
+	}
+}
+
+export async function getFormBlob(form: FormData, key: string): Promise<Blob | undefined> {
+	const f = form.get(key)
+	if (f instanceof Blob) {
+		return f
+	}
+}
+
+export function getFormText(form: FormData, key: string): string | undefined {
+	const f = form.get(key)
+	if (typeof f === "string") {
+		return f
 	}
 }
 
@@ -1271,9 +1331,9 @@ export type CronRule =
 	| "hourly"
 	| "minutely"
 
-const real = (n: any) => n !== undefined && n !== null && !isNaN(n)
+const isReal = (n: any) => n !== undefined && n !== null && !isNaN(n)
 
-// TODO: support */n intervals
+// TODO: support intervals
 export function cron(rule: CronRule, action: () => void) {
 	if (rule === "yearly") return cron("0 0 1 1 *", action)
 	if (rule === "monthly") return cron("0 0 1 * *", action)
@@ -1284,7 +1344,7 @@ export function cron(rule: CronRule, action: () => void) {
 	let paused = false
 	const [min, hour, date, month, day] = rule
 		.split(" ")
-		.map((def) => def === "*" ? "*" : new Set(def.split(",").map(Number).filter(real)))
+		.map((def) => def === "*" ? "*" : new Set(def.split(",").map(Number).filter(isReal)))
 	function run() {
 		if (paused) return
 		const now = new Date()
@@ -1307,4 +1367,14 @@ export function cron(rule: CronRule, action: () => void) {
 			paused = p
 		},
 	}
+}
+
+const alphaNumChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+export function randAlphaNum(len: number = 8) {
+	let str = ""
+	for (let i = 0; i < len; i++) {
+		str += alphaNumChars.charAt(Math.floor(Math.random() * alphaNumChars.length))
+	}
+	return str
 }

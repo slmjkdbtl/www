@@ -10,8 +10,10 @@ import {
 	dir,
 	route,
 	getFormBlobData,
+	getFormText,
 	cron,
 	kvList,
+	randAlphaNum,
 	Req,
 } from "./../www"
 
@@ -32,10 +34,8 @@ type User = {
 	name: string,
 	password: string,
 	salt: string,
-	alive: boolean,
-	power: number,
-	age: number,
 	picture?: Uint8Array,
+	desc?: string,
 }
 
 const userTable = db.table<User>("user", {
@@ -44,9 +44,7 @@ const userTable = db.table<User>("user", {
 	"password": { type: "TEXT" },
 	"salt":     { type: "TEXT" },
 	"picture":  { type: "BLOB", allowNull: true },
-	"alive":    { type: "BOOLEAN" },
-	"age":      { type: "INTEGER" },
-	"power":    { type: "REAL" },
+	"desc":     { type: "TEXT", allowNull: true },
 }, {
 	timeCreated: true,
 	timeUpdated: true,
@@ -83,13 +81,15 @@ const postTable = db.table<DBPost>("post", {
 type DBChat = {
 	id: string,
 	msg: string,
-	user_id: string,
+	from_user_id: string,
+	to_user_id: string,
 }
 
 const chatTable = db.table<DBChat>("chat", {
-	"id":       { type: "TEXT", primaryKey: true },
-	"msg":      { type: "TEXT" },
-	"user_id":  { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
+	"id":            { type: "TEXT", primaryKey: true },
+	"msg":           { type: "TEXT" },
+	"from_user_id":  { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
+	"to_user_id":    { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
 }, {
 	timeCreated: true,
 	timeUpdated: true,
@@ -107,6 +107,12 @@ const styles = {
 	},
 	"body": {
 		"padding": "16px",
+	},
+	"input": {
+		"padding": "2px",
+	},
+	"textarea": {
+		"padding": "2px",
 	},
 	"@keyframes": {
 		"bounce": {
@@ -127,6 +133,7 @@ const styles = {
 
 type FormField = {
 	name: string,
+	label?: false | string,
 	[k: string]: any,
 }
 type FormOpts = {
@@ -136,39 +143,47 @@ type FormOpts = {
 	fields: FormField[],
 }
 
+const form = (opts: FormOpts) => {
+	return h("form", {
+		class: "vstack g4",
+		enctype: "multipart/form-data",
+		action: opts.endpoint,
+		method: opts.method,
+	}, [
+		...(opts.fields ?? []).map((f) => {
+			const el = f.type === "textarea"
+				? h("textarea", { ...f }, f.value ?? "")
+				: h("input", { ...f })
+			if (f.label === false) {
+				return el
+			} else {
+				return h("label", { class: "hstack g4" }, [
+					f.label ?? f.name,
+					el,
+				])
+			}
+		}),
+		h("input", { type: "submit", value: opts.action }),
+	])
+}
+
 server.use(route("GET", "/", async ({ req, res }) => {
 	const user = getSession(req)?.user
-	const field = (name: string, input: Record<string, any> = {}) => {
-		return h("label", { class: "hstack g4" }, [
-			name,
-			h("input", { ...input, name: name }),
-		])
-	}
-	const form = (opts: FormOpts) => {
-		return h("form", {
-			class: "vstack g4",
-			enctype: "multipart/form-data",
-			action: opts.endpoint,
-			method: opts.method,
-		}, [
-			...(opts.fields ?? []).map((f) => {
-				if (f.type === "textarea") {
-					return h("textarea", { ...f }, "")
-				} else {
-					return field(f.name, f)
-				}
-			}),
-			h("input", { type: "submit", value: opts.action }),
-		])
-	}
-	const posts = postTable.select().reverse()
-	const postsHTML = h("div", { class: "vstach g4" }, [
+	const posts = db.joinSelect({
+		table: postTable,
+		columns: ["content", "user_id", "time_created"],
+		on: "user_id",
+	}, {
+		table: userTable,
+		columns: ["name"],
+		on: "id",
+	})
+	const postsHTML = h("div", { class: "vstack g8" }, [
 		...posts.map((p) => {
-			const user = userTable.find({ id: p["user_id"] })
 			return h("div", { class: "vstack g4" }, [
 				h("div", { class: "hstack g4 align-center" }, [
 					h("img", {
-						src: `/pic/${user["id"]}`,
+						src: `/pic/${p["user_id"]}`,
 						style: {
 							"width": "24px",
 							"height": "24px",
@@ -182,41 +197,31 @@ server.use(route("GET", "/", async ({ req, res }) => {
 		})
 	])
 	if (user) {
-		return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
-			h("head", {}, [
-				h("title", {}, "home"),
-				// @ts-ignore
-				h("style", {}, css(styles)),
-				h("style", {}, csslib()),
-			]),
-			h("body", {}, [
-				h("div", { class: "vstack g8" }, [
-					h("div", { class: "hstack g8", }, [
-						h("span", {}, `Hi! ${user.name}`),
-						h("a", { href: "/logout" }, "log out"),
-					]),
-					form({
-						endpoint: "/form/post",
-						method: "POST",
-						action: "post",
-						fields: [
-							{ name: "content", type: "textarea", required: "true" },
-						],
-					}),
-					postsHTML,
+		return res.sendHTML(page([
+			h("title", {}, "home"),
+		], [
+			h("div", { class: "vstack g16" }, [
+				h("div", { class: "hstack g8", }, [
+					h("span", {}, `Hi! ${user.name}`),
+					h("a", { href: "/logout" }, "log out"),
 				]),
+				form({
+					endpoint: "/form/post",
+					method: "POST",
+					action: "post",
+					fields: [
+						{ name: "content", type: "textarea", required: true, label: false },
+					],
+				}),
+				postsHTML,
 			]),
 		]))
 	} else {
-		return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
-			h("head", {}, [
-				h("title", {}, "login / signup"),
-				// @ts-ignore
-				h("style", {}, css(styles)),
-				h("style", {}, csslib()),
-			]),
-			h("body", {}, [
-				h("div", { class: "hstack g8" }, [
+		return res.sendHTML(page([
+			h("title", {}, "home"),
+		], [
+			h("div", { class: "vstack g16" }, [
+				h("div", { class: "hstack g16" }, [
 					form({
 						endpoint: "/form/login",
 						method: "POST",
@@ -234,75 +239,40 @@ server.use(route("GET", "/", async ({ req, res }) => {
 							{ name: "name", required: true, },
 							{ name: "password", type: "password", required: true, },
 							{ name: "picture", type: "file" },
-							{ name: "alive", type: "checkbox", checked: true, },
-							{ name: "power", type: "number", required: true, },
-							{ name: "age", type: "number", min: 0, required: true, },
+							{ name: "desc", type: "textarea" },
 						],
 					}),
 				]),
 				postsHTML,
-				h("script", {}, jsData("DATA", {
-					// TODO
-				})),
-				h("script", {}, await js("client.ts")),
 			]),
 		]))
 	}
 }))
 
-const errorPage = (msg: string) => {
+function page(head: string[], body: string[]) {
 	return "<!DOCTYPE html>" + h("html", {}, [
 		h("head", {}, [
-			h("title", {}, "error"),
+			...head,
 			// @ts-ignore
 			h("style", {}, css(styles)),
 			h("style", {}, csslib()),
 		]),
 		h("body", {}, [
+			...body,
+		]),
+	])
+}
+
+function errPage(msg: string) {
+	return page([
+		h("title", {}, "error"),
+	], [
+		h("div", { class: "vstack g8" }, [
 			h("p", {}, msg),
 			h("a", { href: "/" }, "back to home"),
 		]),
 	])
 }
-
-server.use(route("GET", "/users", async ({ req, res, next }) => {
-	const users = userTable.select()
-	return res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
-		h("head", {}, [
-			h("title", {}, "users"),
-			// @ts-ignore
-			h("style", {}, css(styles)),
-			h("style", {}, csslib()),
-
-		]),
-		h("head", {}, [
-			h("table", {}, [
-				h("tr", {}, [
-					h("th", {}, "picture"),
-					h("th", {}, "name"),
-					h("th", {}, "alive"),
-					h("th", {}, "age"),
-					h("th", {}, "power"),
-				]),
-				...(users.map((user) => h("tr", {}, [
-					h("td", {}, [
-						h("img", {
-							src: `/pic/${user.id}`,
-							style: {
-								"width": "48px",
-								"height": "48px",
-							},
-						}),
-					]),
-					h("td", {}, user.name),
-					h("td", {}, user.alive ? "true" : "false"),
-					h("td", {}, user.age + ""),
-					h("td", {}, user.power + ""),
-				]))),
-			]),
-		]),
-	]))
-}))
 
 server.use(route("GET", "/pic/:id", async ({ req, res, next }) => {
 	const id = req.params["id"]
@@ -310,7 +280,7 @@ server.use(route("GET", "/pic/:id", async ({ req, res, next }) => {
 		"id": id,
 	})
 	if (!user) {
-		return res.sendHTML(errorPage("not found"), { status: 404 })
+		return res.sendHTML(errPage("not found"), { status: 404 })
 	}
 	return res.send(user.picture)
 }))
@@ -331,57 +301,37 @@ function getSession(req: Req) {
 	}
 }
 
-function createSession(user: User) {
-	const sessionID = crypto.randomUUID()
-	sessionTable.insert({
-		"id": sessionID,
-		"user_id": user.id,
-	})
-	return sessionID
-}
-
 server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 	const form = await req.formData()
-	const required = [
-		"name",
-		"password",
-		"power",
-		"age",
-	]
-	for (const r of required) {
-		if (!form.get(r)) {
-			return res.sendHTML(errorPage(`missing required field "${r}"`), { status: 400 })
-		}
-	}
-	const name = form.get("name") as string
+	const name = getFormText(form, "name")
+	if (!name)
+		return res.sendHTML(errPage(`missing required field "name"`), { status: 400 })
+	const password = getFormText(form, "password")
+	if (!password)
+		return res.sendHTML(errPage(`missing required field "password"`), { status: 400 })
 	const user = userTable.find({
 		"name": name,
 	})
 	if (user)
-		return res.sendHTML(errorPage(`user "${name}" already exists`), { status: 400 })
-	const power = Number(form.get("power"))
-	if (isNaN(power))
-		return res.sendHTML(errorPage(`invalid value for "power"`), { status: 400 })
-	const age = Number(form.get("age"))
-	if (isNaN(power))
-		return res.sendHTML(errorPage(`invalid value for "age"`), { status: 400 })
-	const pass = form.get("password") as string
+		return res.sendHTML(errPage(`user "${name}" already exists`), { status: 400 })
 	const salt = crypto.randomBytes(SALT_LENGTH).toString("hex")
-	const hash = crypto.pbkdf2Sync(pass, salt, 1000, 64, "sha256").toString("hex")
-	const alive = Boolean(form.get("alive"))
+	const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha256").toString("hex")
 	const pic = await getFormBlobData(form, "picture")
+	const desc = getFormText(form, "desc")
 	const id = crypto.randomUUID()
 	userTable.insert({
 		"id": id,
 		"name": name,
+		"desc": desc,
 		"salt": salt,
 		"password": hash,
-		"power": power,
-		"age": age,
-		"alive": alive,
 		"picture": pic ?? undefined,
 	})
-	const sessionID = createSession(user)
+	const sessionID = crypto.randomUUID()
+	sessionTable.insert({
+		"id": sessionID,
+		"user_id": id,
+	})
 	return res.redirect("/", {
 		headers: {
 			// TODO: Expires
@@ -395,6 +345,49 @@ server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 	})
 }))
 
+server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
+	const session = getSession(req)
+	if (!session)
+		return res.sendHTML(errPage("please log in first"), { status: 400 })
+	const user = session.user
+	const form = await req.formData()
+	const name = getFormText(form, "name")
+	const where = { id: user.id }
+	if (name) userTable.update({ name: name }, where)
+	const desc = getFormText(form, "desc")
+	if (desc) userTable.update({ desc: desc }, where)
+	const pic = await getFormBlobData(form, "picture")
+	if (pic) userTable.update({ picture: pic }, where)
+	const pass = await getFormBlobData(form, "password")
+	if (pass) {
+		const hash = crypto.pbkdf2Sync(pass, user.salt, 1000, 64, "sha256").toString("hex")
+		userTable.update({ password: hash }, where)
+	}
+	return res.redirect("/")
+}))
+
+server.use(route("GET", "/settings", async ({ req, res, next }) => {
+	const session = getSession(req)
+	if (!session)
+		return res.sendHTML(errPage("please log in first"), { status: 400 })
+	const user = session.user
+	return res.sendHTML(page([
+		h("title", {}, "settings"),
+	], [
+		form({
+			action: "save",
+			endpoint: "/form/settings",
+			method: "POST",
+			fields: [
+				{ name: "name", value: user.name },
+				{ name: "password", type: "password", },
+				{ name: "picture", type: "file" },
+				{ name: "desc", type: "textarea", value: user.desc },
+			],
+		}),
+	]))
+}))
+
 server.use(route("GET", "/logout", async ({ req, res, next }) => {
 	const session = getSession(req)
 	if (session) {
@@ -406,22 +399,26 @@ server.use(route("GET", "/logout", async ({ req, res, next }) => {
 server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 	const session = getSession(req)
 	if (session)
-		return res.sendHTML(errorPage("please log out first"), { status: 400 })
+		return res.sendHTML(errPage("please log out first"), { status: 400 })
 	const form = await req.formData()
-	const name = form.get("name") as string
+	const name = getFormText(form, "name")
 	if (!name)
-		return res.sendHTML(errorPage(`missing "name"`), { status: 400 })
-	const pass = form.get("password") as string
-	if (!pass)
-		return res.sendHTML(errorPage(`missing "pass"`), { status: 400 })
+		return res.sendHTML(errPage(`missing "name"`), { status: 400 })
+	const password = getFormText(form, "password")
+	if (!password)
+		return res.sendHTML(errPage(`missing "password"`), { status: 400 })
 	const user = userTable.find({ name: name })
 	if (!user)
-		return res.sendHTML(errorPage(`user not found: "${name}"`), { status: 404 })
+		return res.sendHTML(errPage(`user not found: "${name}"`), { status: 404 })
 	const salt = user.salt
-	const hash = crypto.pbkdf2Sync(pass, salt, 1000, 64, "sha256").toString("hex")
+	const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha256").toString("hex")
 	if (hash !== user.password)
-		return res.sendHTML(errorPage(`incorrect password`), { status: 400 })
-	const sessionID = createSession(user)
+		return res.sendHTML(errPage(`incorrect password`), { status: 401 })
+	const sessionID = crypto.randomUUID()
+	sessionTable.insert({
+		"id": sessionID,
+		"user_id": user.id,
+	})
 	return res.redirect("/", {
 		headers: {
 			// TODO: Expires
@@ -438,11 +435,11 @@ server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 server.use(route("POST", "/form/post", async ({ req, res, next }) => {
 	const session = getSession(req)
 	if (!session)
-		return res.sendHTML(errorPage("please log in first"), { status: 400 })
+		return res.sendHTML(errPage("please log in first"), { status: 400 })
 	const form = await req.formData()
-	const content = form.get("content") as string
+	const content = getFormText(form, "content")
 	if (!content)
-		return res.sendHTML(errorPage("content cannot be empty"), { status: 400 })
+		return res.sendHTML(errPage("content cannot be empty"), { status: 400 })
 	const id = crypto.randomUUID()
 	postTable.insert({
 		"id": id,
@@ -452,58 +449,13 @@ server.use(route("POST", "/form/post", async ({ req, res, next }) => {
 	return res.redirect("/")
 }))
 
-server.use(route("GET", "/chat", ({ res }) => {
-	res.sendHTML("<!DOCTYPE html>" + h("html", {}, [
-		h("head", {}, [
-			h("title", {}, "chat room"),
-			// @ts-ignore
-			h("style", {}, css(styles)),
-		]),
-		h("body", {}, [
-			h("h1", {}, "chat room"),
-			h("div", { id: "messages" }, []),
-			h("p", { id: "username" }, ""),
-			h("input", { id: "input" }),
-			h("script", {}, `
-const ws = new WebSocket("ws://${server.hostname}:${server.port}/ws")
-const input = document.querySelector("#input")
-const messages = document.querySelector("#messages")
-const usernameEl = document.querySelector("#username")
-
-function addMsg(data) {
-	const el = document.createElement("p")
-	el.textContent = "(" + data.user + ")" + " " + data.msg
-	messages.appendChild(el)
-}
-
-input.onkeydown = (e) => {
-	if (e.key === "Enter") {
-		ws.send(JSON.stringify({
-			msg: e.target.value,
-		}))
-		e.target.value = ""
-	}
-}
-
-ws.onmessage = (e) => {
-	const data = JSON.parse(e.data)
-	if (data.type === "MESSAGE") {
-		addMsg(data)
-	} else if (data.type === "CONNECT") {
-		usernameEl.textContent = "your id is " + data.id
-	}
-}
-			`),
-		]),
-	]))
-}))
-
 // TODO: why req.url.protocol isn't ws?
 server.use(route("GET", "/ws", ({ req, res, upgrade, next }) => {
 	const success = upgrade()
 	if (!success) {
-		res.sendText("failed to start web socket", { status: 500 })
+		return res.sendText("failed to start web socket", { status: 500 })
 	}
+	next()
 }))
 
 server.ws.onMessage((ws, msg) => {
@@ -530,6 +482,7 @@ server.use(route("GET", "/err", async () => {
 
 server.error(({ res }, err) => {
 	res.status = 500
+	console.log(err)
 	res.sendText(`oh no: ` + err)
 })
 
