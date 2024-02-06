@@ -530,6 +530,37 @@ export function matchPath(pat: string, url: string): Record<string, string> | nu
 
 }
 
+export type RateLimitOpts = {
+	time: number,
+	limit: number,
+	handler: Handler,
+}
+
+export function rateLimit(opts: RateLimitOpts): Handler {
+	const map: Record<string, number[]> = {}
+	return (ctx) => {
+		const ip = ctx.req.getIP()
+		if (!ip) return ctx.next()
+		if (!map[ip]) {
+			map[ip] = []
+		}
+		map[ip].push(new Date().getTime())
+		if (map[ip].length > opts.limit) {
+			const elapsed = (new Date().getTime() - map[ip][0]) / 1000
+			if (elapsed >= opts.time) {
+				map[ip].shift()
+				return ctx.next()
+			} else {
+				map[ip].pop()
+				ctx.res.status = 429
+				ctx.res.headers.append("Retry-After", Math.ceil(opts.time - elapsed) + "")
+				return opts.handler(ctx)
+			}
+		}
+		return ctx.next()
+	}
+}
+
 export type ColumnType =
 	| "INTEGER"
 	| "TEXT"
@@ -578,6 +609,7 @@ export type JoinTable<D> = {
 	columns?: "*" | string[],
 	on: string,
 	where?: WhereCondition,
+	order?: OrderCondition,
 }
 
 export type JoinType =

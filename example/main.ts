@@ -13,6 +13,7 @@ import {
 	getFormText,
 	cron,
 	kvList,
+	rateLimit,
 	randAlphaNum,
 	Req,
 } from "./../www"
@@ -29,7 +30,7 @@ const server = createServer({ port: 8000 })
 console.log(`Listening on ${server.url.toString()}`)
 const db = createDatabase("data/data.db")
 
-type User = {
+type DBUser = {
 	id: string,
 	name: string,
 	password: string,
@@ -38,7 +39,7 @@ type User = {
 	desc?: string,
 }
 
-const userTable = db.table<User>("user", {
+const userTable = db.table<DBUser>("user", {
 	"id":       { type: "TEXT", primaryKey: true },
 	"name":     { type: "TEXT", unique: true, index: true },
 	"password": { type: "TEXT" },
@@ -167,6 +168,14 @@ const form = (opts: FormOpts) => {
 	])
 }
 
+server.use(rateLimit({
+	time: 2,
+	limit: 1,
+	handler: ({ req, res, next }) => {
+		return res.send("too many requests")
+	},
+}))
+
 server.use(route("GET", "/", async ({ req, res }) => {
 	const user = getSession(req)?.user
 	const posts = db.joinSelect({
@@ -177,6 +186,8 @@ server.use(route("GET", "/", async ({ req, res }) => {
 		table: userTable,
 		columns: ["name"],
 		on: "id",
+	}).sort((a, b) => {
+		return (new Date(b.time_created)).getTime() - (new Date(a.time_created)).getTime()
 	})
 	const postsHTML = h("div", { class: "vstack g8" }, [
 		...posts.map((p) => {
@@ -189,7 +200,7 @@ server.use(route("GET", "/", async ({ req, res }) => {
 							"height": "24px",
 						},
 					}),
-					h("p", {}, user["name"]),
+					h("p", {}, p["name"]),
 				]),
 				h("p", {}, p["content"]),
 				h("p", { style: { color: "#666" } }, p["time_created"]),
