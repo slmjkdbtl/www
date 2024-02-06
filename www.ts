@@ -602,19 +602,12 @@ export type SelectOpts = {
 	where?: WhereCondition,
 	order?: OrderCondition,
 	limit?: LimitCondition,
+	join?: JoinTable<any>[],
 }
 
 export type ColumnName = string | {
 	name: string,
 	as: string,
-}
-
-export type JoinTable<D> = {
-	table: Table<D>,
-	columns?: "*" | ColumnName[],
-	on: string,
-	where?: WhereCondition,
-	order?: OrderCondition,
 }
 
 export type JoinType =
@@ -623,16 +616,24 @@ export type JoinType =
 	| "right"
 	| "full"
 
-export type JoinSelectOpts = {
+export type JoinTable<D> = {
+	table: Table<D>,
+	columns?: "*" | ColumnName[],
+	on: {
+		column: string,
+		matchTable: Table,
+		matchColumn: string,
+	},
+	where?: WhereCondition,
+	order?: OrderCondition,
 	type?: JoinType,
-	distinct?: boolean,
 }
 
 export type TableSchema = Record<string, ColumnDef>
 
-export type Table<D> = {
+export type Table<D = any> = {
 	name: string,
-	select: (opts?: SelectOpts) => D[],
+	select: <DD = D>(opts?: SelectOpts) => DD[],
 	insert: (data: D) => void,
 	update: (data: Partial<D>, where: WhereCondition) => void,
 	delete: (where: WhereCondition) => void,
@@ -666,7 +667,6 @@ export type Database = {
 	transaction: (action: () => void) => void,
 	close: () => void,
     serialize: (name?: string) => Buffer,
-	joinSelect<D1, D2>(t1: JoinTable<D1>, t2: JoinTable<D2>, opts?: JoinSelectOpts): Array<D1 & D2>,
 }
 
 // TODO: support views
@@ -882,6 +882,27 @@ END
 		// TODO: transform types?
 		function select(opts: SelectOpts = {}) {
 			const vars = {}
+			if (opts.join) {
+				const colNames = (t: string, cols: ColumnName[] | "*" = "*") => {
+					const c = cols === "*" ? ["*"] : cols
+					return c
+						.filter((name) => name)
+						.map((c) => {
+							if (typeof c === "string") {
+								return `${t}.${c}`
+							} else {
+								return `${t}.${c.name} AS ${c.as}`
+							}
+						})
+						.join(", ")
+				}
+				const items = compile(`
+SELECT${opts.distinct ? " DISTINCT" : ""} ${colNames(tableName, opts.columns)}, ${opts.join.map((j) => colNames(j.table.name, j.columns)).join(", ")}
+FROM ${tableName}
+${opts.join.map((j) => `${j.type ? j.type.toUpperCase() + " " : ""}JOIN ${j.table.name} ON ${j.table.name}.${j.on.column} = ${j.on.matchTable.name}.${j.on.matchColumn}`).join("\n")}
+				`).all(vars) ?? []
+				return items
+			}
 			const items = compile(`
 SELECT${opts.distinct ? " DISTINCT" : ""} ${genColumnNameSQL(opts.columns)}
 FROM ${tableName}
@@ -973,7 +994,10 @@ ${genWhereSQL(where, vars)}
 	}
 
 	// TODO: multiple tables
-	function joinSelect<D1, D2>(t1: JoinTable<D1>, t2: JoinTable<D2>, opts: JoinSelectOpts = {}) {
+	function joinSelect<D1, D2>(tables: JoinTable<any>[], opts: JoinSelectOpts = {}) {
+		if (tables.length < 2) {
+			throw new Error("cannot join less than 2 tables")
+		}
 		const vars = {}
 		const colNames = (table: Table<any>, cols: ColumnName[] | "*" = "*") => {
 			const c = cols === "*" ? ["*"] : cols
@@ -990,9 +1014,9 @@ ${genWhereSQL(where, vars)}
 		}
 		// TODO: where
 		const items = compile(`
-SELECT${opts.distinct ? " DISTINCT" : ""} ${colNames(t1.table, t1.columns)}, ${colNames(t2.table, t2.columns)}
-FROM ${t1.table.name} JOIN ${t2.table.name}
-ON ${t1.table.name}.${t1.on} = ${t2.table.name}.${t2.on}
+SELECT${opts.distinct ? " DISTINCT" : ""} ${tables.map((t) => colNames(t.table, t.columns)).join(", ")}
+FROM ${tables[0].table.name} JOIN ${tables[1].table.name}
+ON ${tables[0].table.name}.${tables[0].on} = ${tables[1].table.name}.${tables[1].on}
 		`).all(vars) as (D1 & D2)[] ?? []
 		// TODO: transform boolean
 		return items
@@ -1003,7 +1027,6 @@ ON ${t1.table.name}.${t1.on} = ${t2.table.name}.${t2.on}
 		transaction,
 		close: bdb.close,
 		serialize: bdb.serialize,
-		joinSelect,
 	}
 
 }
@@ -1060,14 +1083,14 @@ export function getFormText(form: FormData, key: string): string | undefined {
 
 export function getFormBlob(form: FormData, key: string): Blob | undefined {
 	const f = form.get(key)
-	if (f instanceof Blob) {
+	if (f && f instanceof Blob && f.size > 0) {
 		return f
 	}
 }
 
 export async function getFormBlobData(form: FormData, key: string) {
 	const f = form.get(key)
-	if (f instanceof Blob) {
+	if (f && f instanceof Blob && f.size > 0) {
 		return new Uint8Array(await f.arrayBuffer())
 	}
 }

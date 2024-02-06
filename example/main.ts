@@ -9,6 +9,7 @@ import {
 	jsData,
 	dir,
 	route,
+	getFormBlob,
 	getFormBlobData,
 	getFormText,
 	cron,
@@ -30,13 +31,28 @@ const server = createServer({ port: 8000 })
 console.log(`Listening on ${server.url.toString()}`)
 const db = createDatabase("data/data.db")
 
+type DBBlob = {
+	id: string,
+	data: Uint8Array,
+	type: string,
+}
+
+const blobTable = db.table<DBBlob>("blob", {
+	"id":   { type: "TEXT", primaryKey: true },
+	"data": { type: "BLOB" },
+	"type": { type: "TEXT" },
+}, {
+	timeCreated: true,
+	timeUpdated: true,
+})
+
 type DBUser = {
 	id: string,
 	name: string,
 	password: string,
 	salt: string,
-	picture?: Uint8Array,
 	desc?: string,
+	img_id?: string,
 }
 
 const userTable = db.table<DBUser>("user", {
@@ -44,8 +60,8 @@ const userTable = db.table<DBUser>("user", {
 	"name":     { type: "TEXT", unique: true, index: true },
 	"password": { type: "TEXT" },
 	"salt":     { type: "TEXT" },
-	"picture":  { type: "BLOB", allowNull: true },
 	"desc":     { type: "TEXT", allowNull: true },
+	"img_id":   { type: "TEXT", allowNull: true, reference: { table: "img", column: "id" } },
 }, {
 	timeCreated: true,
 	timeUpdated: true,
@@ -80,15 +96,14 @@ const postTable = db.table<DBPost>("post", {
 })
 
 type DBPostImg = {
-	id: string,
 	post_id: string,
-	data: Uint8Array,
+	img_id: string,
 }
 
 const postImgTable = db.table<DBPostImg>("post_img", {
-	"id":       { type: "TEXT", primaryKey: true },
+	"id":       { type: "INTEGER", primaryKey: true, autoIncrement: true },
 	"post_id":  { type: "TEXT", index: true, reference: { table: "post", column: "id" } },
-	"data":     { type: "BLOB" },
+	"img_id":   { type: "TEXT", reference: { table: "img", column: "id" } },
 }, {
 	timeCreated: true,
 	timeUpdated: true,
@@ -230,26 +245,33 @@ server.use(rateLimit({
 
 server.use(route("GET", "/", async ({ req, res }) => {
 	const user = getSession(req)?.user
-	const posts = db.joinSelect({
-		table: postTable,
+	const posts = postTable.select<any>({
 		columns: ["id", "content", "user_id", "time_created"],
-		on: "user_id",
-	}, {
-		table: userTable,
-		columns: [ { name: "name", as: "user_name" } ],
-		on: "id",
+		join: [
+			{
+				table: userTable,
+				columns: [
+					{ name: "name", as: "user_name" },
+					{ name: "img_id", as: "user_img_id" },
+				],
+				on: { column: "id", matchTable: postTable, matchColumn: "user_id" },
+			},
+			{
+				table: postImgTable,
+				columns: [ "img_id" ],
+				on: { column: "post_id", matchTable: postTable, matchColumn: "id" },
+				type: "left",
+			},
+		],
 	}).sort((a, b) => {
-		return (new Date(b.time_created)).getTime() - (new Date(a.time_created)).getTime()
+		return (new Date(b["time_created"])).getTime() - (new Date(a["time_created"])).getTime()
 	})
 	const postsHTML = h("div", { class: "vstack g16" }, [
 		...posts.map((p) => {
-			const img = postImgTable.find({
-				"post_id": p.id,
-			})
 			return h("div", { class: "vstack g4" }, [
 				h("div", { class: "hstack g4 align-center" }, [
 					h("img", {
-						src: `/user-pic/${p["user_id"]}`,
+						src: `/blob/${p["user_img_id"]}`,
 						style: {
 							"width": "24px",
 							"height": "24px",
@@ -257,9 +279,9 @@ server.use(route("GET", "/", async ({ req, res }) => {
 					}),
 					h("p", {}, p["user_name"]),
 				]),
-				...(img ? [
+				...(p["img_id"] ? [
 					h("img", {
-						src: `/post-img/${img.id}`,
+						src: `/blob/${p["img_id"]}`,
 						style: {
 							"width": "160px",
 							"height": "160px",
@@ -318,7 +340,7 @@ server.use(route("GET", "/", async ({ req, res }) => {
 						fields: [
 							{ name: "name", required: true, },
 							{ name: "password", type: "password", required: true, },
-							{ name: "picture", type: "file", accept: "image/png, image/gif, image/jpeg" },
+							{ name: "img", type: "file", accept: "image/png, image/gif, image/jpeg" },
 							{ name: "desc", type: "textarea" },
 						],
 					}),
@@ -340,6 +362,7 @@ server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
 	if (post.user_id !== session.user.id) {
 		return res.sendHTML(errPage("cannot delete other user's post"), { status: 401 })
 	}
+	// TODO: delete img from blob table
 	postTable.delete({
 		"id": postID,
 	})
@@ -349,26 +372,15 @@ server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
 	return res.redirect("/")
 }))
 
-server.use(route("GET", "/user-pic/:id", async ({ req, res, next }) => {
+server.use(route("GET", "/blob/:id", async ({ req, res, next }) => {
 	const id = req.params["id"]
-	const user = userTable.find({
+	const img = blobTable.find({
 		"id": id,
 	})
-	if (!user) {
+	if (!img) {
 		return res.sendHTML(errPage("not found"), { status: 404 })
 	}
-	return res.send(user.picture)
-}))
-
-server.use(route("GET", "/post-img/:id", async ({ req, res, next }) => {
-	const id = req.params["id"]
-	const postImg = postImgTable.find({
-		"id": id,
-	})
-	if (!postImg) {
-		return res.sendHTML(errPage("not found"), { status: 404 })
-	}
-	return res.send(postImg.data)
+	return res.send(new Blob([img.data], { type: img.type }))
 }))
 
 function getSession(req: Req) {
@@ -402,16 +414,25 @@ server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 		return res.sendHTML(errPage(`user "${name}" already exists`), { status: 400 })
 	const salt = crypto.randomBytes(SALT_LENGTH).toString("hex")
 	const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha256").toString("hex")
-	const pic = await getFormBlobData(form, "picture")
 	const desc = getFormText(form, "desc")
 	const id = crypto.randomUUID()
+	const img = await getFormBlob(form, "img")
+	let imgID = undefined
+	if (img) {
+		imgID = crypto.randomUUID()
+		blobTable.insert({
+			"id": imgID,
+			"data": new Uint8Array(await img.arrayBuffer()),
+			"type": img.type,
+		})
+	}
 	userTable.insert({
 		"id": id,
 		"name": name,
 		"desc": desc,
 		"salt": salt,
 		"password": hash,
-		"picture": pic ?? undefined,
+		"img_id": imgID,
 	})
 	const sessionID = crypto.randomUUID()
 	sessionTable.insert({
@@ -442,9 +463,17 @@ server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
 	if (name) userTable.update({ name: name }, where)
 	const desc = getFormText(form, "desc")
 	if (desc) userTable.update({ desc: desc }, where)
-	const pic = await getFormBlobData(form, "picture")
-	if (pic) userTable.update({ picture: pic }, where)
-	const pass = await getFormBlobData(form, "password")
+	const img = await getFormBlob(form, "img")
+	if (img) {
+		const imgID = crypto.randomUUID()
+		blobTable.insert({
+			"id": imgID,
+			"data": new Uint8Array(await img.arrayBuffer()),
+			"type": img.type,
+		})
+		userTable.update({ img_id: imgID }, where)
+	}
+	const pass = await getFormText(form, "password")
 	if (pass) {
 		const hash = crypto.pbkdf2Sync(pass, user.salt, 1000, 64, "sha256").toString("hex")
 		userTable.update({ password: hash }, where)
@@ -467,7 +496,7 @@ server.use(route("GET", "/settings", async ({ req, res, next }) => {
 			fields: [
 				{ name: "name", value: user.name },
 				{ name: "password", type: "password", },
-				{ name: "picture", type: "file" },
+				{ name: "img", type: "file" },
 				{ name: "desc", type: "textarea", value: user.desc },
 			],
 		}),
@@ -532,13 +561,18 @@ server.use(route("POST", "/form/post", async ({ req, res, next }) => {
 		"user_id": session.user.id,
 		"content": content,
 	})
-	const pic = await getFormBlobData(form, "img")
-	if (pic) {
-		const postImgID = crypto.randomUUID()
+	const img = getFormBlob(form, "img")
+	if (img) {
+		const imgID = crypto.randomUUID()
+		const data = new Uint8Array(await img.arrayBuffer())
+		blobTable.insert({
+			"id": imgID,
+			"data": data,
+			"type": img.type,
+		})
 		postImgTable.insert({
-			"id": postImgID,
 			"post_id": postID,
-			"data": pic,
+			"img_id": imgID,
 		})
 	}
 	return res.redirect("/")
