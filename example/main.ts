@@ -79,6 +79,21 @@ const postTable = db.table<DBPost>("post", {
 	timeUpdated: true,
 })
 
+type DBPostImg = {
+	id: string,
+	post_id: string,
+	data: Uint8Array,
+}
+
+const postImgTable = db.table<DBPostImg>("post_img", {
+	"id":       { type: "TEXT", primaryKey: true },
+	"post_id":  { type: "TEXT", index: true, reference: { table: "post", column: "id" } },
+	"data":     { type: "BLOB" },
+}, {
+	timeCreated: true,
+	timeUpdated: true,
+})
+
 type DBChat = {
 	id: string,
 	msg: string,
@@ -132,6 +147,43 @@ const styles = {
 	],
 }
 
+function page(head: string[], body: string[]) {
+	return "<!DOCTYPE html>" + h("html", {}, [
+		h("head", {}, [
+			...head,
+			// @ts-ignore
+			h("style", {}, css(styles)),
+			h("style", {}, csslib()),
+		]),
+		h("body", {}, [
+			...body,
+		]),
+	])
+}
+
+function errPage(msg: string) {
+	return page([
+		h("title", {}, "error"),
+	], [
+		h("div", { class: "vstack g8" }, [
+			h("p", {}, msg),
+			h("a", { href: "/" }, "back to home"),
+		]),
+	])
+}
+
+function confirmPage(msg: string, yes: string, no: string) {
+	return page([
+		h("title", {}, "confirm"),
+	], [
+		h("div", { class: "vstack g8" }, [
+			h("p", {}, msg),
+			h("a", { href: no }, "no"),
+			h("a", { href: yes }, "yes"),
+		]),
+	])
+}
+
 type FormField = {
 	name: string,
 	label?: false | string,
@@ -169,8 +221,8 @@ const form = (opts: FormOpts) => {
 }
 
 server.use(rateLimit({
-	time: 2,
-	limit: 1,
+	time: 1,
+	limit: 100,
 	handler: ({ req, res, next }) => {
 		return res.send("too many requests")
 	},
@@ -180,30 +232,45 @@ server.use(route("GET", "/", async ({ req, res }) => {
 	const user = getSession(req)?.user
 	const posts = db.joinSelect({
 		table: postTable,
-		columns: ["content", "user_id", "time_created"],
+		columns: ["id", "content", "user_id", "time_created"],
 		on: "user_id",
 	}, {
 		table: userTable,
-		columns: ["name"],
+		columns: [ { name: "name", as: "user_name" } ],
 		on: "id",
 	}).sort((a, b) => {
 		return (new Date(b.time_created)).getTime() - (new Date(a.time_created)).getTime()
 	})
-	const postsHTML = h("div", { class: "vstack g8" }, [
+	const postsHTML = h("div", { class: "vstack g16" }, [
 		...posts.map((p) => {
+			const img = postImgTable.find({
+				"post_id": p.id,
+			})
 			return h("div", { class: "vstack g4" }, [
 				h("div", { class: "hstack g4 align-center" }, [
 					h("img", {
-						src: `/pic/${p["user_id"]}`,
+						src: `/user-pic/${p["user_id"]}`,
 						style: {
 							"width": "24px",
 							"height": "24px",
 						},
 					}),
-					h("p", {}, p["name"]),
+					h("p", {}, p["user_name"]),
 				]),
+				...(img ? [
+					h("img", {
+						src: `/post-img/${img.id}`,
+						style: {
+							"width": "160px",
+							"height": "160px",
+						},
+					}),
+				] : []),
 				h("p", {}, p["content"]),
 				h("p", { style: { color: "#666" } }, p["time_created"]),
+				...(p.user_id === user?.id ? [
+					h("a", { href: `/delete-post/${p["id"]}` }, "delete"),
+				] : []),
 			])
 		})
 	])
@@ -216,11 +283,13 @@ server.use(route("GET", "/", async ({ req, res }) => {
 					h("span", {}, `Hi! ${user.name}`),
 					h("a", { href: "/logout" }, "log out"),
 				]),
+				h("a", { href: "/settings" }, "settings"),
 				form({
 					endpoint: "/form/post",
 					method: "POST",
 					action: "post",
 					fields: [
+						{ name: "img", type: "file", accept: "image/png, image/gif, image/jpeg" },
 						{ name: "content", type: "textarea", required: true, label: false },
 					],
 				}),
@@ -249,7 +318,7 @@ server.use(route("GET", "/", async ({ req, res }) => {
 						fields: [
 							{ name: "name", required: true, },
 							{ name: "password", type: "password", required: true, },
-							{ name: "picture", type: "file" },
+							{ name: "picture", type: "file", accept: "image/png, image/gif, image/jpeg" },
 							{ name: "desc", type: "textarea" },
 						],
 					}),
@@ -260,32 +329,27 @@ server.use(route("GET", "/", async ({ req, res }) => {
 	}
 }))
 
-function page(head: string[], body: string[]) {
-	return "<!DOCTYPE html>" + h("html", {}, [
-		h("head", {}, [
-			...head,
-			// @ts-ignore
-			h("style", {}, css(styles)),
-			h("style", {}, csslib()),
-		]),
-		h("body", {}, [
-			...body,
-		]),
-	])
-}
+server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
+	const session = getSession(req)
+	if (!session)
+		return res.sendHTML(errPage("please log in first"), { status: 401 })
+	const postID = req.params["id"]
+	const post = postTable.find({
+		id: postID,
+	})
+	if (post.user_id !== session.user.id) {
+		return res.sendHTML(errPage("cannot delete other user's post"), { status: 401 })
+	}
+	postTable.delete({
+		"id": postID,
+	})
+	postImgTable.delete({
+		"post_id": postID,
+	})
+	return res.redirect("/")
+}))
 
-function errPage(msg: string) {
-	return page([
-		h("title", {}, "error"),
-	], [
-		h("div", { class: "vstack g8" }, [
-			h("p", {}, msg),
-			h("a", { href: "/" }, "back to home"),
-		]),
-	])
-}
-
-server.use(route("GET", "/pic/:id", async ({ req, res, next }) => {
+server.use(route("GET", "/user-pic/:id", async ({ req, res, next }) => {
 	const id = req.params["id"]
 	const user = userTable.find({
 		"id": id,
@@ -294,6 +358,17 @@ server.use(route("GET", "/pic/:id", async ({ req, res, next }) => {
 		return res.sendHTML(errPage("not found"), { status: 404 })
 	}
 	return res.send(user.picture)
+}))
+
+server.use(route("GET", "/post-img/:id", async ({ req, res, next }) => {
+	const id = req.params["id"]
+	const postImg = postImgTable.find({
+		"id": id,
+	})
+	if (!postImg) {
+		return res.sendHTML(errPage("not found"), { status: 404 })
+	}
+	return res.send(postImg.data)
 }))
 
 function getSession(req: Req) {
@@ -359,7 +434,7 @@ server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
 	const session = getSession(req)
 	if (!session)
-		return res.sendHTML(errPage("please log in first"), { status: 400 })
+		return res.sendHTML(errPage("please log in first"), { status: 401 })
 	const user = session.user
 	const form = await req.formData()
 	const name = getFormText(form, "name")
@@ -380,7 +455,7 @@ server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
 server.use(route("GET", "/settings", async ({ req, res, next }) => {
 	const session = getSession(req)
 	if (!session)
-		return res.sendHTML(errPage("please log in first"), { status: 400 })
+		return res.sendHTML(errPage("please log in first"), { status: 401 })
 	const user = session.user
 	return res.sendHTML(page([
 		h("title", {}, "settings"),
@@ -446,17 +521,26 @@ server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 server.use(route("POST", "/form/post", async ({ req, res, next }) => {
 	const session = getSession(req)
 	if (!session)
-		return res.sendHTML(errPage("please log in first"), { status: 400 })
+		return res.sendHTML(errPage("please log in first"), { status: 401 })
 	const form = await req.formData()
 	const content = getFormText(form, "content")
 	if (!content)
 		return res.sendHTML(errPage("content cannot be empty"), { status: 400 })
-	const id = crypto.randomUUID()
+	const postID = crypto.randomUUID()
 	postTable.insert({
-		"id": id,
+		"id": postID,
 		"user_id": session.user.id,
 		"content": content,
 	})
+	const pic = await getFormBlobData(form, "img")
+	if (pic) {
+		const postImgID = crypto.randomUUID()
+		postImgTable.insert({
+			"id": postImgID,
+			"post_id": postID,
+			"data": pic,
+		})
+	}
 	return res.redirect("/")
 }))
 

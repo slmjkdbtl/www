@@ -597,16 +597,21 @@ export type OrderCondition = {
 export type LimitCondition = number
 
 export type SelectOpts = {
-	columns?: "*" | string[],
+	columns?: "*" | ColumnName[],
 	distinct?: boolean,
 	where?: WhereCondition,
 	order?: OrderCondition,
 	limit?: LimitCondition,
 }
 
+export type ColumnName = string | {
+	name: string,
+	as: string,
+}
+
 export type JoinTable<D> = {
 	table: Table<D>,
-	columns?: "*" | string[],
+	columns?: "*" | ColumnName[],
 	on: string,
 	where?: WhereCondition,
 	order?: OrderCondition,
@@ -681,6 +686,14 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 			queries[sql] = bdb.query(sql)
 		}
 		return queries[sql]
+	}
+
+	function genColumnNameSQL(columns: "*" | ColumnName[] = "*") {
+		if (!columns || columns === "*") return "*"
+		return columns.map((c) => {
+			if (typeof c === "string") return c
+			if (c.as) return `${c.name} AS ${c.as}`
+		}).join(",")
 	}
 
 	// TODO: support OR
@@ -870,7 +883,7 @@ END
 		function select(opts: SelectOpts = {}) {
 			const vars = {}
 			const items = compile(`
-SELECT${opts.distinct ? " DISTINCT" : ""} ${!opts.columns || opts.columns === "*" ? "*" : opts.columns.join(", ")}
+SELECT${opts.distinct ? " DISTINCT" : ""} ${genColumnNameSQL(opts.columns)}
 FROM ${tableName}
 ${opts.where ? genWhereSQL(opts.where, vars) : ""}
 ${opts.order ? genOrderSQL(opts.order) : ""}
@@ -959,13 +972,21 @@ ${genWhereSQL(where, vars)}
 
 	}
 
+	// TODO: multiple tables
 	function joinSelect<D1, D2>(t1: JoinTable<D1>, t2: JoinTable<D2>, opts: JoinSelectOpts = {}) {
 		const vars = {}
-		const colNames = (table: Table<any>, cols: string[] | "*" = "*") => {
+		const colNames = (table: Table<any>, cols: ColumnName[] | "*" = "*") => {
 			const c = cols === "*" ? ["*"] : cols
 			return c
 				.filter((name) => name)
-				.map((name) => `${table.name}.${name}`).join(", ")
+				.map((c) => {
+					if (typeof c === "string") {
+						return `${table.name}.${c}`
+					} else {
+						return `${table.name}.${c.name} AS ${c.as}`
+					}
+				})
+				.join(", ")
 		}
 		// TODO: where
 		const items = compile(`
@@ -1030,16 +1051,16 @@ export async function getReqData(req: Request) {
 	}
 }
 
-export async function getFormBlob(form: FormData, key: string): Promise<Blob | undefined> {
+export function getFormText(form: FormData, key: string): string | undefined {
 	const f = form.get(key)
-	if (f instanceof Blob) {
+	if (typeof f === "string") {
 		return f
 	}
 }
 
-export function getFormText(form: FormData, key: string): string | undefined {
+export function getFormBlob(form: FormData, key: string): Blob | undefined {
 	const f = form.get(key)
-	if (typeof f === "string") {
+	if (f instanceof Blob) {
 		return f
 	}
 }
