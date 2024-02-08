@@ -66,7 +66,6 @@ export const postTable = db.table<DBPost>("post", {
 }, {
 	timeCreated: true,
 	timeUpdated: true,
-	paranoid: true,
 })
 
 export type DBPostImg = {

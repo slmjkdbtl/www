@@ -1,3 +1,5 @@
+// a twitter clone
+
 import {
 	isDev,
 	createServer,
@@ -6,6 +8,7 @@ import {
 	h,
 	js,
 	jsData,
+	files,
 	dir,
 	route,
 	getFormBlob,
@@ -56,6 +59,11 @@ const styles = {
 	},
 	"textarea": {
 		"padding": "2px",
+	},
+	"fieldset": {
+		"padding": "8px",
+		"border": "solid 1px #767676",
+		"border-radius": "2px",
 	},
 	"@keyframes": {
 		"bounce": {
@@ -117,33 +125,48 @@ type FormField = {
 	[k: string]: any,
 }
 
+type FormFieldSet = {
+	legend: string,
+	fields: FormField[],
+}
+
 type FormOpts = {
 	action: string,
 	endpoint: string,
 	method: string,
-	fields: FormField[],
+	fields?: FormField[],
+	fieldsets?: FormFieldSet[],
 }
 
 const form = (opts: FormOpts) => {
+	const field = (f: FormField) => {
+		const el = f.type === "textarea"
+			? h("textarea", { ...f }, f.value ?? "")
+			: h("input", { ...f })
+		if (f.label === false) {
+			return el
+		} else {
+			return h("label", { class: "hstack g4" }, [
+				f.label ?? f.name,
+				el,
+			])
+		}
+	}
+	const fieldset = (f: FormFieldSet) => {
+		return h("fieldset", { class: "vstack g4" }, [
+			h("legend", {}, f.legend),
+			...f.fields.map(field),
+		])
+	}
+	const fields = opts.fields ?? []
 	return h("form", {
-		class: "vstack g4",
+		class: "vstack g8",
 		enctype: "multipart/form-data",
 		action: opts.endpoint,
 		method: opts.method,
 	}, [
-		...(opts.fields ?? []).map((f) => {
-			const el = f.type === "textarea"
-				? h("textarea", { ...f }, f.value ?? "")
-				: h("input", { ...f })
-			if (f.label === false) {
-				return el
-			} else {
-				return h("label", { class: "hstack g4" }, [
-					f.label ?? f.name,
-					el,
-				])
-			}
-		}),
+		fields.length > 0 ? h("div", { class: "vstack g4" }, fields.map(field)) : null,
+		...((opts.fieldsets ?? []).map(fieldset)),
 		h("input", { type: "submit", value: opts.action }),
 	])
 }
@@ -223,9 +246,15 @@ server.use(route("GET", "/", async ({ req, res }) => {
 					endpoint: "/form/post",
 					method: "POST",
 					action: "post",
-					fields: [
-						{ name: "img", type: "file", accept: "image/png, image/gif, image/jpeg" },
-						{ name: "content", type: "textarea", required: true, label: false },
+					fieldsets: [
+						{
+							legend: "post",
+							fields: [
+								{ name: "img", type: "file", accept: "image/png, image/gif, image/jpeg" },
+								{ name: "content", type: "textarea", required: true, label: false },
+
+							],
+						},
 					],
 				}),
 				postsHTML,
@@ -241,20 +270,30 @@ server.use(route("GET", "/", async ({ req, res }) => {
 						endpoint: "/form/login",
 						method: "POST",
 						action: "log in",
-						fields: [
-							{ name: "name", required: true, },
-							{ name: "password", type: "password", required: "true" },
+						fieldsets: [
+							{
+								legend: "log in",
+								fields: [
+									{ name: "name", required: true, },
+									{ name: "password", type: "password", required: "true" },
+								],
+							}
 						],
 					}),
 					form({
 						endpoint: "/form/signup",
 						method: "POST",
 						action: "sign up",
-						fields: [
-							{ name: "name", required: true, },
-							{ name: "password", type: "password", required: true, },
-							{ name: "img", type: "file", accept: "image/png, image/gif, image/jpeg" },
-							{ name: "desc", type: "textarea" },
+						fieldsets: [
+							{
+								legend: "sign up",
+								fields: [
+									{ name: "name", required: true, },
+									{ name: "password", type: "password", required: true, },
+									{ name: "img", type: "file", accept: "image/png, image/gif, image/jpeg" },
+									{ name: "desc", type: "textarea" },
+								],
+							}
 						],
 					}),
 				]),
@@ -272,7 +311,6 @@ server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
 	const post = postTable.find({
 		id: postID,
 	})
-	console.log(post, postID)
 	if (post.user_id !== session.user.id) {
 		return res.sendHTML(errPage("cannot delete other user's post"), { status: 401 })
 	}
@@ -297,12 +335,8 @@ server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
 
 server.use(route("GET", "/blob/:id", async ({ req, res, next }) => {
 	const id = req.params["id"]
-	const img = blobTable.find({
-		"id": id,
-	})
-	if (!img) {
-		return res.sendHTML(errPage("not found"), { status: 404 })
-	}
+	const img = blobTable.find({ "id": id })
+	if (!img) return next()
 	return res.send(new Blob([img.data], { type: img.type }))
 }))
 
@@ -540,8 +574,8 @@ server.use(route("GET", "/err", () => {
 server.error(({ res }, err) => {
 	if (isDev) throw err
 	res.status = 500
-	console.log(err)
-	res.sendText(`server error: ` + err.message)
+	console.error(err)
+	res.sendText(`internal server error`)
 })
 
 server.notFound(({ res }) => {

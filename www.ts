@@ -295,26 +295,20 @@ export function createServer(opts: ServerOpts = {}): Server {
 					},
 				}
 				if (h) {
-					if (errHandler) {
-						try {
-							const res = h(ctx)
-							if (isPromise(res)) {
-								res.catch((e) => {
-									if (errHandler) {
-										errHandler(ctx, e)
-									}
-								})
-							}
-						} catch (e) {
-							errHandler(ctx, e as Error)
+					try {
+						const res = h(ctx)
+						if (isPromise(res)) {
+							res.catch((e) => {
+								if (errHandler) {
+									errHandler(ctx, e)
+								}
+							})
 						}
-					} else {
-						h(ctx)
+					} catch (e) {
+						errHandler(ctx, e as Error)
 					}
 				} else {
-					if (notFoundHandler) {
-						notFoundHandler(ctx)
-					}
+					notFoundHandler(ctx)
 				}
 			}
 			next()
@@ -330,8 +324,16 @@ export function createServer(opts: ServerOpts = {}): Server {
 
 	const handlers: Registry<Handler> = new Registry()
 	const use = (handler: Handler) => handlers.push(handler)
-	let errHandler: ErrorHandler | null = null
-	let notFoundHandler: NotFoundHandler | null = null
+	let errHandler: ErrorHandler = ({ req, res, next }, err) => {
+		if (isDev) throw err
+		console.error(err)
+		res.status = 500
+		res.sendText(`internal server error`)
+	}
+	let notFoundHandler: NotFoundHandler = ({ res }) => {
+		res.status = 404
+		res.sendText("not found")
+	}
 
 	return {
 		use: use,
@@ -600,14 +602,14 @@ export type WhereOp =
 	| "NOT LIKE"
 	| "NOT IN"
 
-export type WhereOp2 =
+export type WhereOpSingle =
 	| "IS NULL"
 	| "IS NOT NULL"
 
 export type WhereValue =
 	| string
 	| { value: string, op: WhereOp }
-	| { op: WhereOp2 }
+	| { op: WhereOpSingle }
 
 export type DBVars = Record<string, string | number | boolean | Uint8Array>
 export type DBData = Record<string, string | number | boolean | Uint8Array>
@@ -1110,7 +1112,7 @@ export async function getFormBlobData(form: FormData, key: string) {
 	}
 }
 
-type HTMLChildren = string | number
+type HTMLChildren = string | number | undefined | null
 
 // html text builder
 export function h(
