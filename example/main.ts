@@ -1,7 +1,6 @@
 import {
 	isDev,
 	createServer,
-	createDatabase,
 	css,
 	csslib,
 	h,
@@ -10,7 +9,6 @@ import {
 	dir,
 	route,
 	getFormBlob,
-	getFormBlobData,
 	getFormText,
 	cron,
 	kvList,
@@ -19,9 +17,19 @@ import {
 	Req,
 } from "./../www"
 
+import {
+	db,
+	userTable,
+	postTable,
+	blobTable,
+	sessionTable,
+	postImgTable,
+	chatTable,
+} from "./db"
+
 import * as crypto from "crypto"
 
-const SALT_LENGTH = 16
+export const SALT_LENGTH = 16
 
 cron("* * * * *", () => {
 	console.log(new Date())
@@ -29,102 +37,6 @@ cron("* * * * *", () => {
 
 const server = createServer({ port: 8000 })
 console.log(`Listening on ${server.url.toString()}`)
-const db = createDatabase("data/data.db")
-
-type DBBlob = {
-	id: string,
-	data: Uint8Array,
-	type: string,
-}
-
-const blobTable = db.table<DBBlob>("blob", {
-	"id":   { type: "TEXT", primaryKey: true },
-	"data": { type: "BLOB" },
-	"type": { type: "TEXT" },
-}, {
-	timeCreated: true,
-	timeUpdated: true,
-})
-
-type DBUser = {
-	id: string,
-	name: string,
-	password: string,
-	salt: string,
-	desc?: string,
-	img_id?: string,
-}
-
-const userTable = db.table<DBUser>("user", {
-	"id":       { type: "TEXT", primaryKey: true },
-	"name":     { type: "TEXT", unique: true, index: true },
-	"password": { type: "TEXT" },
-	"salt":     { type: "TEXT" },
-	"desc":     { type: "TEXT", allowNull: true },
-	"img_id":   { type: "TEXT", allowNull: true, reference: { table: "img", column: "id" } },
-}, {
-	timeCreated: true,
-	timeUpdated: true,
-})
-
-type DBSession = {
-	id: string,
-	user_id: string,
-}
-
-const sessionTable = db.table<DBSession>("session", {
-	"id":       { type: "TEXT", primaryKey: true },
-	"user_id":  { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
-}, {
-	timeCreated: true,
-	timeUpdated: true,
-})
-
-type DBPost = {
-	id: string,
-	content: string,
-	user_id: string,
-}
-
-const postTable = db.table<DBPost>("post", {
-	"id":       { type: "TEXT", primaryKey: true },
-	"content":  { type: "TEXT" },
-	"user_id":  { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
-}, {
-	timeCreated: true,
-	timeUpdated: true,
-})
-
-type DBPostImg = {
-	post_id: string,
-	img_id: string,
-}
-
-const postImgTable = db.table<DBPostImg>("post_img", {
-	"id":       { type: "INTEGER", primaryKey: true, autoIncrement: true },
-	"post_id":  { type: "TEXT", index: true, reference: { table: "post", column: "id" } },
-	"img_id":   { type: "TEXT", reference: { table: "img", column: "id" } },
-}, {
-	timeCreated: true,
-	timeUpdated: true,
-})
-
-type DBChat = {
-	id: string,
-	msg: string,
-	from_user_id: string,
-	to_user_id: string,
-}
-
-const chatTable = db.table<DBChat>("chat", {
-	"id":            { type: "TEXT", primaryKey: true },
-	"msg":           { type: "TEXT" },
-	"from_user_id":  { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
-	"to_user_id":    { type: "TEXT", index: true, reference: { table: "user", column: "id" } },
-}, {
-	timeCreated: true,
-	timeUpdated: true,
-})
 
 const styles = {
 	"*": {
@@ -204,6 +116,7 @@ type FormField = {
 	label?: false | string,
 	[k: string]: any,
 }
+
 type FormOpts = {
 	action: string,
 	endpoint: string,
@@ -260,7 +173,7 @@ server.use(route("GET", "/", async ({ req, res }) => {
 				table: postImgTable,
 				columns: [ "img_id" ],
 				on: { column: "post_id", matchTable: postTable, matchColumn: "id" },
-				type: "left",
+				join: "LEFT",
 			},
 		],
 	}).sort((a, b) => {
@@ -359,15 +272,25 @@ server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
 	const post = postTable.find({
 		id: postID,
 	})
+	console.log(post, postID)
 	if (post.user_id !== session.user.id) {
 		return res.sendHTML(errPage("cannot delete other user's post"), { status: 401 })
 	}
-	// TODO: delete img from blob table
-	postTable.delete({
-		"id": postID,
-	})
-	postImgTable.delete({
-		"post_id": postID,
+	db.transaction(() => {
+		const postImgs = postImgTable.findAll({
+			"post_id": postID,
+		})
+		for (const { img_id } of postImgs) {
+			blobTable.delete({
+				"id": img_id,
+			})
+		}
+		postTable.delete({
+			"id": postID,
+		})
+		postImgTable.delete({
+			"post_id": postID,
+		})
 	})
 	return res.redirect("/")
 }))
@@ -446,7 +369,7 @@ server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 				"session": sessionID,
 				"HttpOnly": true,
 				"Path": "/",
-				"Secure": !isDev,
+				"Secure": true,
 			}),
 		}
 	})
@@ -466,6 +389,11 @@ server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
 	const img = await getFormBlob(form, "img")
 	if (img) {
 		const imgID = crypto.randomUUID()
+		if (user.img_id) {
+			blobTable.delete({
+				"id": user.img_id,
+			})
+		}
 		blobTable.insert({
 			"id": imgID,
 			"data": new Uint8Array(await img.arrayBuffer()),
@@ -541,7 +469,7 @@ server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 				"session": sessionID,
 				"HttpOnly": true,
 				"Path": "/",
-				"Secure": !isDev,
+				"Secure": true,
 			}),
 		}
 	})
@@ -605,17 +533,18 @@ server.ws.onOpen((ws) => {
 
 server.use(dir("/dir", "."))
 
-server.use(route("GET", "/err", async () => {
+server.use(route("GET", "/err", () => {
 	throw new Error("yep")
 }))
 
 server.error(({ res }, err) => {
+	if (isDev) throw err
 	res.status = 500
 	console.log(err)
-	res.sendText(`oh no: ` + err)
+	res.sendText(`server error: ` + err.message)
 })
 
 server.notFound(({ res }) => {
 	res.status = 404
-	res.sendText("nothing here")
+	res.sendText("not found")
 })

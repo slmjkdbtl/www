@@ -1,5 +1,4 @@
 // helpers for the world wide web with Bun
-// TODO: rate limiter
 
 import * as fs from "fs"
 import * as path from "path"
@@ -576,7 +575,7 @@ export type ColumnDef = {
 	unique?: boolean,
 	default?: string | number,
 	index?: boolean,
-	search?: boolean,
+	fts?: boolean,
 	reference?: {
 		table: string,
 		column: string,
@@ -587,9 +586,32 @@ export type CreateDatabaseOpts = {
 	wal?: boolean,
 }
 
-export type SQLVars = Record<string, string | number | boolean | Uint8Array>
-export type SQLData = Record<string, string | number | boolean | Uint8Array>
-export type WhereCondition = Record<string, string | { value: string, op: string }>
+export type WhereOp =
+	| "="
+	| ">"
+	| "<"
+	| ">="
+	| "<="
+	| "!="
+	| "BETWEEN"
+	| "LIKE"
+	| "IN"
+	| "NOT BETWEEN"
+	| "NOT LIKE"
+	| "NOT IN"
+
+export type WhereOp2 =
+	| "IS NULL"
+	| "IS NOT NULL"
+
+export type WhereValue =
+	| string
+	| { value: string, op: WhereOp }
+	| { op: WhereOp2 }
+
+export type DBVars = Record<string, string | number | boolean | Uint8Array>
+export type DBData = Record<string, string | number | boolean | Uint8Array>
+export type WhereCondition = Record<string, WhereValue>
 export type OrderCondition = {
 	columns: string[],
 	desc?: boolean,
@@ -611,34 +633,34 @@ export type ColumnName = string | {
 }
 
 export type JoinType =
-	| "inner"
-	| "left"
-	| "right"
-	| "full"
+	| "INNER"
+	| "LEFT"
+	| "RIGHT"
+	| "FULL"
 
 export type JoinTable<D> = {
 	table: Table<D>,
 	columns?: "*" | ColumnName[],
 	on: {
 		column: string,
-		matchTable: Table,
+		matchTable: Table<any>,
 		matchColumn: string,
 	},
 	where?: WhereCondition,
 	order?: OrderCondition,
-	type?: JoinType,
+	join?: JoinType,
 }
 
 export type TableSchema = Record<string, ColumnDef>
 
-export type Table<D = any> = {
+export type Table<D = DBData> = {
 	name: string,
-	select: <DD = D>(opts?: SelectOpts) => DD[],
+	select: <D2 = D>(opts?: SelectOpts) => D2[],
 	insert: (data: D) => void,
 	update: (data: Partial<D>, where: WhereCondition) => void,
 	delete: (where: WhereCondition) => void,
-	find: (where: WhereCondition) => D,
-	findAll: (where: WhereCondition) => D[],
+	find: <D2 = D>(where: WhereCondition) => D2,
+	findAll: <D2 = D>(where: WhereCondition) => D2[],
 	count: (where?: WhereCondition) => number,
 	search: (text: string) => D[],
 	schema: TableSchema,
@@ -651,7 +673,7 @@ export type TableOpts<D> = {
 	initData?: D[],
 }
 
-type TableData<D extends SQLData, O extends TableOpts<D>> =
+type TableData<D extends DBData, O extends TableOpts<D>> =
 	(O extends { timeCreated: true } ? D & { time_created?: string } : D)
 	& (O extends { timeUpdated: true } ? D & { time_updated?: string } : D)
 	& (O extends { paranoid: true } ? D & { time_deleted?: string } : D)
@@ -659,7 +681,7 @@ type TableData<D extends SQLData, O extends TableOpts<D>> =
 // https://discord.com/channels/508357248330760243/1203901900844572723
 // typescript has no partial type inference...
 export type Database = {
-	table: <D extends SQLData, O extends TableOpts<D> = TableOpts<D>>(
+	table: <D extends DBData, O extends TableOpts<D> = TableOpts<D>>(
 		name: string,
 		schema: TableSchema,
 		opts?: O,
@@ -697,11 +719,15 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 	}
 
 	// TODO: support OR
-	function genWhereSQL(where: WhereCondition, vars: SQLVars) {
+	function genWhereSQL(where: WhereCondition, vars: DBVars) {
 		return `WHERE ${Object.entries(where).map(([k, v]) => {
 			if (typeof v === "object") {
-				vars[`$where_${k}`] = v.value
-				return `${k} ${v.op} $where_${k}`
+				if ("value" in v) {
+					vars[`$where_${k}`] = v.value
+					return `${k} ${v.op} $where_${k}`
+				} else {
+					return `${k} ${v.op}`
+				}
 			} else {
 				vars[`$where_${k}`] = v
 				return `${k} = $where_${k}`
@@ -713,23 +739,31 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 		return `ORDER BY ${order.columns.join(", ")}${order.desc ? " DESC" : ""}`
 	}
 
-	function genLimitSQL(limit: LimitCondition, vars: SQLVars) {
+	function genLimitSQL(limit: LimitCondition, vars: DBVars) {
 		vars["$limit"] = limit
 		return `LIMIT $limit`
 	}
 
 	// TODO: support multiple values
-	function genValuesSQL(data: SQLData, vars: SQLVars) {
+	function genValuesSQL(data: DBData, vars: DBVars) {
 		return `VALUES (${Object.entries(data).map(([k, v]) => {
 			vars[`$value_${k}`] = v
 			return `$value_${k}`
 		}).join(", ")})`
 	}
 
-	function genSetSQL(data: SQLData, vars: SQLVars) {
+	const specialVars = new Set([
+		"CURRENT_TIMESTAMP",
+	])
+
+	function genSetSQL(data: DBData, vars: DBVars) {
 		return `SET ${Object.entries(data).map(([k, v]) => {
-			vars[`$set_${k}`] = v
-			return `${k} = $set_${k}`
+			if (typeof v === "string" && specialVars.has(v)) {
+				return `${k} = ${v}`
+			} else {
+				vars[`$set_${k}`] = v
+				return `${k} = $set_${k}`
+			}
 		}).join(", ")}`
 	}
 
@@ -761,7 +795,7 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 	function table<D extends Record<string, any>>(
 		tableName: string,
 		schema: TableSchema,
-		opts: TableOpts<D> = {}
+		topts: TableOpts<D> = {}
 	): Table<D> {
 
 		if (tableName.endsWith("_fts")) {
@@ -787,7 +821,7 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 			return item
 		}
 
-		function transformItems(items: any[]): D[] {
+		function transformItems(items: any[]): any[] {
 			if (!needsTransform) return items;
 			return items.map(transformItem)
 		}
@@ -802,20 +836,20 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 CREATE TABLE ${tableName} (
 ${genColumnsSQL({
 ...schema,
-...(opts.timeCreated ? {
+...(topts.timeCreated ? {
 	"time_created": { type: "TEXT", default: "CURRENT_TIMESTAMP" },
 } : {}),
-...(opts.timeUpdated ? {
+...(topts.timeUpdated ? {
 	"time_updated": { type: "TEXT", default: "CURRENT_TIMESTAMP" },
 } : {}),
-...(opts.paranoid ? {
+...(topts.paranoid ? {
 	"time_deleted": { type: "TEXT", allowNull: true },
 } : {}),
 })}
 )
 			`)
 			const pks = []
-			const searches = []
+			const fts = []
 			for (const colName in schema) {
 				const config = schema[colName]
 				if (config.primaryKey) {
@@ -826,11 +860,14 @@ ${genColumnsSQL({
 CREATE INDEX idx_${tableName}_${colName} ON ${tableName}(${colName})
 					`)
 				}
-				if (config.search) {
-					searches.push(colName)
+				if (config.fts) {
+					fts.push(colName)
 				}
 			}
-			if (opts.timeUpdated) {
+			if (topts.timeUpdated) {
+				if (pks.length === 0) {
+					throw new Error("time updated requires primary key")
+				}
 				run(`
 CREATE TRIGGER trigger_${tableName}_time_updated
 AFTER UPDATE ON ${tableName}
@@ -841,17 +878,17 @@ BEGIN
 END
 				`)
 			}
-			if (searches.length > 0) {
+			if (fts.length > 0) {
 				// TODO: content / content_rowid?
 				run(`
-CREATE VIRTUAL TABLE ${tableName}_fts USING fts5 (${[...pks, ...searches].join(", ")})
+CREATE VIRTUAL TABLE ${tableName}_fts USING fts5 (${[...pks, ...fts].join(", ")})
 			`)
 			run(`
 CREATE TRIGGER trigger_${tableName}_fts_insert
 AFTER INSERT ON ${tableName}
 BEGIN
-	INSERT INTO ${tableName}_fts (${[...pks, ...searches].join(", ")})
-	VALUES (${[...pks, ...searches].map((c) => `NEW.${c}`).join(", ")});
+	INSERT INTO ${tableName}_fts (${[...pks, ...fts].join(", ")})
+	VALUES (${[...pks, ...fts].map((c) => `NEW.${c}`).join(", ")});
 END
 				`)
 				run(`
@@ -859,7 +896,7 @@ CREATE TRIGGER trigger_${tableName}_fts_update
 AFTER UPDATE ON ${tableName}
 BEGIN
 	UPDATE ${tableName}_fts
-	SET ${searches.map((c) => `${c} = NEW.${c}`).join(", ")}
+	SET ${fts.map((c) => `${c} = NEW.${c}`).join(", ")}
 	WHERE ${pks.map((pk) => `${pk} = NEW.${pk}`).join(" AND ")};
 END
 				`)
@@ -873,16 +910,23 @@ END
 				`)
 			}
 
-			if (opts.initData) {
-				opts.initData.forEach(insert)
+			if (topts.initData) {
+				topts.initData.forEach(insert)
 			}
 
 		}
 
 		// TODO: transform types?
-		function select(opts: SelectOpts = {}) {
+		function select<D2 = D>(opts: SelectOpts = {}): D2[] {
 			const vars = {}
+			if (topts.paranoid) {
+				opts.where = {
+					...(opts.where ?? {}),
+					"time_deleted": { op: "IS NULL" },
+				}
+			}
 			if (opts.join) {
+				// TODO: support where from join tables
 				const colNames = (t: string, cols: ColumnName[] | "*" = "*") => {
 					const c = cols === "*" ? ["*"] : cols
 					return c
@@ -899,9 +943,10 @@ END
 				const items = compile(`
 SELECT${opts.distinct ? " DISTINCT" : ""} ${colNames(tableName, opts.columns)}, ${opts.join.map((j) => colNames(j.table.name, j.columns)).join(", ")}
 FROM ${tableName}
-${opts.join.map((j) => `${j.type ? j.type.toUpperCase() + " " : ""}JOIN ${j.table.name} ON ${j.table.name}.${j.on.column} = ${j.on.matchTable.name}.${j.on.matchColumn}`).join("\n")}
+${opts.join.map((j) => `${j.join ? j.join.toUpperCase() + " " : ""}JOIN ${j.table.name} ON ${j.table.name}.${j.on.column} = ${j.on.matchTable.name}.${j.on.matchColumn}`).join("\n")}
+${opts.where ? genWhereSQL(opts.where, vars) : ""}
 				`).all(vars) ?? []
-				return items
+				return items as D2[]
 			}
 			const items = compile(`
 SELECT${opts.distinct ? " DISTINCT" : ""} ${genColumnNameSQL(opts.columns)}
@@ -909,8 +954,8 @@ FROM ${tableName}
 ${opts.where ? genWhereSQL(opts.where, vars) : ""}
 ${opts.order ? genOrderSQL(opts.order) : ""}
 ${opts.limit ? genLimitSQL(opts.limit, vars) : ""}
-			`).all(vars) as D[] ?? []
-			return transformItems(items)
+			`).all(vars) ?? []
+			return transformItems(items) as D2[]
 		}
 
 		function count(where?: WhereCondition) {
@@ -920,14 +965,14 @@ ${opts.limit ? genLimitSQL(opts.limit, vars) : ""}
 			return Number(compile(sql).all(vars)[0]["COUNT(*)"])
 		}
 
-		function findAll(where: WhereCondition) {
+		function findAll<D2 = D>(where: WhereCondition): D2[] {
 			return select({
 				where: where,
 			})
 		}
 
-		function find(where: WhereCondition) {
-			return select({
+		function find<D2 = D>(where: WhereCondition): D2 {
+			return select<D2>({
 				where: where,
 				limit: 1,
 			})[0]
@@ -957,18 +1002,17 @@ ${genValuesSQL(data, vars)}
 			const keys = Object.keys(data)
 			compile(`
 UPDATE ${tableName}
-${genSetSQL(data as SQLData, vars)}
+${genSetSQL(data as DBData, vars)}
 ${genWhereSQL(where, vars)}
 			`).run(vars)
 		}
 
 		function remove(where: WhereCondition) {
 			const vars = {}
-			if (opts.paranoid) {
-				// TODO
+			if (topts.paranoid) {
 				// @ts-ignore
 				update({
-					timeDeleted: "CURRENT_TIMESTAMP",
+					"time_deleted": "CURRENT_TIMESTAMP",
 				}, where)
 			} else {
 				compile(`
@@ -991,35 +1035,6 @@ ${genWhereSQL(where, vars)}
 			schema,
 		}
 
-	}
-
-	// TODO: multiple tables
-	function joinSelect<D1, D2>(tables: JoinTable<any>[], opts: JoinSelectOpts = {}) {
-		if (tables.length < 2) {
-			throw new Error("cannot join less than 2 tables")
-		}
-		const vars = {}
-		const colNames = (table: Table<any>, cols: ColumnName[] | "*" = "*") => {
-			const c = cols === "*" ? ["*"] : cols
-			return c
-				.filter((name) => name)
-				.map((c) => {
-					if (typeof c === "string") {
-						return `${table.name}.${c}`
-					} else {
-						return `${table.name}.${c.name} AS ${c.as}`
-					}
-				})
-				.join(", ")
-		}
-		// TODO: where
-		const items = compile(`
-SELECT${opts.distinct ? " DISTINCT" : ""} ${tables.map((t) => colNames(t.table, t.columns)).join(", ")}
-FROM ${tables[0].table.name} JOIN ${tables[1].table.name}
-ON ${tables[0].table.name}.${tables[0].on} = ${tables[1].table.name}.${tables[1].on}
-		`).all(vars) as (D1 & D2)[] ?? []
-		// TODO: transform boolean
-		return items
 	}
 
 	return {
@@ -1052,7 +1067,7 @@ export type ResponseOpts = {
 	headers?: Record<string, string>,
 }
 
-export function kvList(props: Record<string, string | boolean>) {
+export function kvList(props: Record<string, string | boolean | number>) {
 	return Object.entries(props)
 		.filter(([k, v]) => v)
 		.map(([k, v]) => v === true ? k : `${k}=${v}`)
@@ -1075,30 +1090,36 @@ export async function getReqData(req: Request) {
 }
 
 export function getFormText(form: FormData, key: string): string | undefined {
-	const f = form.get(key)
-	if (typeof f === "string") {
-		return f
+	const t = form.get(key)
+	if (typeof t === "string") {
+		return t
 	}
 }
 
 export function getFormBlob(form: FormData, key: string): Blob | undefined {
-	const f = form.get(key)
-	if (f && f instanceof Blob && f.size > 0) {
-		return f
+	const b = form.get(key)
+	if (b && b instanceof Blob && b.size > 0) {
+		return b
 	}
 }
 
 export async function getFormBlobData(form: FormData, key: string) {
-	const f = form.get(key)
-	if (f && f instanceof Blob && f.size > 0) {
-		return new Uint8Array(await f.arrayBuffer())
+	const b = getFormBlob(form, key)
+	if (b) {
+		return new Uint8Array(await b.arrayBuffer())
 	}
 }
 
-// html text builder
-export function h(tagname: string, attrs: Record<string, any>, children?: string | string[]) {
+type HTMLChildren = string | number
 
-	let html = `<${tagname}`
+// html text builder
+export function h(
+	tag: string,
+	attrs: Record<string, any>,
+	children?: HTMLChildren | HTMLChildren[]
+) {
+
+	let html = `<${tag}`
 
 	for (const k in attrs) {
 		let v = attrs[k]
@@ -1137,7 +1158,7 @@ export function h(tagname: string, attrs: Record<string, any>, children?: string
 	}
 
 	if (children !== undefined && children !== null) {
-		html += `</${tagname}>`
+		html += `</${tag}>`
 	}
 
 	return html
