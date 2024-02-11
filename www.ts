@@ -35,7 +35,6 @@ export type Res = {
 		data?:
 			| ReadableStream
 			| BlobPart
-			| BlobPart[]
 			| FormData
 			| URLSearchParams
 			| null,
@@ -93,20 +92,14 @@ export type Server = {
 		onMessage: (action: (ws: WebSocket, msg: string | Buffer) => void) => EventController,
 		onOpen: (action: (ws: WebSocket) => void) => EventController,
 		onClose: (action: (ws: WebSocket) => void) => EventController,
-		broadcast: (data: string | BufferSource, compress?: boolean) => void,
+		broadcast: (data: string | Bun.BufferSource, compress?: boolean) => void,
 		publish: (
 			topic: string,
-			data: string | TypedArray | DataView | ArrayBuffer | SharedArrayBuffer,
+			data: string | DataView | ArrayBuffer | SharedArrayBuffer,
 			compress?: boolean,
 		) => ServerWebSocketSendStatus,
 	},
 }
-
-type HeadersInit =
-  | Headers
-  | Record<string, string>
-  | Array<[string, string]>
-  | IterableIterator<[string, string]>;
 
 export type ServerOpts = Omit<ServeOptions, "fetch"> | Omit<WebSocketServeOptions, "fetch">
 
