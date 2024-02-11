@@ -15,7 +15,8 @@ import {
 	getFormText,
 	cron,
 	kvList,
-	rateLimit,
+	rateLimiter,
+	logger,
 	randAlphaNum,
 	Req,
 } from "./../www"
@@ -171,7 +172,11 @@ const form = (opts: FormOpts) => {
 	])
 }
 
-server.use(rateLimit({
+server.use(logger({
+	file: "data/log.txt",
+}))
+
+server.use(rateLimiter({
 	time: 1,
 	limit: 100,
 	handler: ({ req, res, next }) => {

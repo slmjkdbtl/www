@@ -46,6 +46,7 @@ export type Res = {
 	sendJSON: <T = any>(content: T, opt?: ResOpt) => void,
 	sendFile: (path: string, opt?: ResOpt) => void,
 	redirect: (location: string, opt?: ResOpt) => void,
+	onFinish: (action: () => void) => void,
 }
 
 export type ResOpt = {
@@ -108,6 +109,7 @@ type HeadersInit =
   | IterableIterator<[string, string]>;
 
 export type ServerOpts = Omit<ServeOptions, "fetch"> | Omit<WebSocketServeOptions, "fetch">
+
 export type ServerUpgradeOpts<T = undefined> = {
 	headers?: HeadersInit,
 	data?: T,
@@ -240,6 +242,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 					return cookies
 				},
 			}
+			const onFinishEvents: Array<() => void> = []
 			const res: Res = {
 				headers: new Headers(),
 				status: 200,
@@ -253,6 +256,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 						status: opt.status ?? this.status,
 					}))
 					done = true
+					onFinishEvents.forEach((f) => f())
 				},
 				sendText(content, opt) {
 					this.headers.append("Content-Type", "text/plain; charset=utf-8")
@@ -278,8 +282,11 @@ export function createServer(opts: ServerOpts = {}): Server {
 					this.headers.append("Location", location)
 					this.send(null, opt)
 				},
+				onFinish(action) {
+					onFinishEvents.push(action)
+				},
 			}
-			const curHandlers = [...handlers.values()]
+			const curHandlers = [...handlers]
 			function next() {
 				if (done) return
 				const h = curHandlers.shift()
@@ -322,7 +329,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 		development: isDev,
 	})
 
-	const handlers: Registry<Handler> = new Registry()
+	const handlers: Handler[] = []
 	const use = (handler: Handler) => handlers.push(handler)
 	let errHandler: ErrorHandler = ({ req, res, next }, err) => {
 		if (isDev) throw err
@@ -500,6 +507,109 @@ export function dir(route = "", root = ""): Handler {
 	}
 }
 
+export type RateLimiterOpts = {
+	time: number,
+	limit: number,
+	handler: Handler,
+}
+
+// TODO: clear cache after time
+export function rateLimiter(opts: RateLimiterOpts): Handler {
+	const record: Record<string, number[]> = {}
+	return (ctx) => {
+		const ip = ctx.req.getIP()
+		if (!ip) return ctx.next()
+		if (!record[ip]) {
+			record[ip] = []
+		}
+		record[ip].push(new Date().getTime())
+		if (record[ip].length > opts.limit) {
+			const elapsed = (new Date().getTime() - record[ip][0]) / 1000
+			if (elapsed >= opts.time) {
+				record[ip].shift()
+				return ctx.next()
+			} else {
+				record[ip].pop()
+				ctx.res.status = 429
+				ctx.res.headers.append("Retry-After", Math.ceil(opts.time - elapsed) + "")
+				return opts.handler(ctx)
+			}
+		}
+		return ctx.next()
+	}
+}
+
+export type LoggerOpts = {
+	format?: string,
+	file?: string,
+	stdio?: boolean,
+	skip?: (req: Req, res: Res) => boolean,
+}
+
+type LoggerMsgOpts = {
+	color?: boolean,
+}
+
+// TODO: log only err / info to file / stdio?
+// TODO: get content length
+// TODO: can there be a onStart() to record time
+// TODO: catch error
+export function logger(opts: LoggerOpts = {}): Handler {
+	return ({ req, res, next }) => {
+		const genMsg = (msgOpts: LoggerMsgOpts = {}) => {
+			const a = mapValues(ansi, (v) => {
+				if (msgOpts.color) {
+					return v
+				} else {
+					if (typeof v === "string") {
+						return ""
+					} else if (typeof v === "function") {
+						return () => ""
+					}
+					return v
+				}
+			})
+			const endTime = new Date()
+			const msg = []
+			const year = endTime.getUTCFullYear().toString().padStart(4, "0")
+			const month = (endTime.getUTCMonth() + 1).toString().padStart(2, "0")
+			const date = endTime.getUTCDate().toString().padStart(2, "0")
+			const hour = endTime.getUTCHours().toString().padStart(2, "0")
+			const minute = endTime.getUTCMinutes().toString().padStart(2, "0")
+			msg.push(`${a.dim}[${year}-${month}-${date} ${hour}:${minute}]${a.reset}`)
+			const statusClor = {
+				"1": a.yellow,
+				"2": a.green,
+				"3": a.blue,
+				"4": a.red,
+				"5": a.red,
+			}[res.status.toString()[0]] ?? a.yellow
+			msg.push(`${a.bold}${statusClor}${res.status}${a.reset}`)
+			msg.push(req.method)
+			msg.push(req.url.pathname)
+			msg.push(`${a.dim}${endTime.getTime() - startTime.getTime()}ms${a.reset}`)
+			return msg.join(" ")
+		}
+		const startTime = new Date()
+		res.onFinish(() => {
+			if (opts.stdio !== false) {
+				const log = {
+					"1": console.log,
+					"2": console.log,
+					"3": console.log,
+					"4": console.error,
+					"5": console.error,
+				}[res.status.toString()[0]] ?? console.log
+				log(genMsg({ color: true }))
+			}
+			if (opts.file) {
+				fs.appendFileSync(opts.file, genMsg({ color: false }) + "\n", "utf8")
+			}
+		})
+		return next()
+	}
+}
+
 const trimSlashes = (str: string) => str.replace(/\/*$/, "").replace(/^\/*/, "")
 const parentPath = (p: string, sep = "/") => p.split(sep).slice(0, -1).join(sep)
 
@@ -529,37 +639,6 @@ export function matchPath(pat: string, url: string): Record<string, string> | nu
 		return null
 	}
 
-}
-
-export type RateLimitOpts = {
-	time: number,
-	limit: number,
-	handler: Handler,
-}
-
-export function rateLimit(opts: RateLimitOpts): Handler {
-	const map: Record<string, number[]> = {}
-	return (ctx) => {
-		const ip = ctx.req.getIP()
-		if (!ip) return ctx.next()
-		if (!map[ip]) {
-			map[ip] = []
-		}
-		map[ip].push(new Date().getTime())
-		if (map[ip].length > opts.limit) {
-			const elapsed = (new Date().getTime() - map[ip][0]) / 1000
-			if (elapsed >= opts.time) {
-				map[ip].shift()
-				return ctx.next()
-			} else {
-				map[ip].pop()
-				ctx.res.status = 429
-				ctx.res.headers.append("Retry-After", Math.ceil(opts.time - elapsed) + "")
-				return opts.handler(ctx)
-			}
-		}
-		return ctx.next()
-	}
 }
 
 export type ColumnType =
@@ -1447,11 +1526,11 @@ export function cron(rule: CronRule, action: () => void) {
 	function run() {
 		if (paused) return
 		const now = new Date()
-		if (month !== "*" && !month.has(now.getMonth() + 1)) return
-		if (date !== "*" && !date.has(now.getDate())) return
-		if (day !== "*" && !day.has(now.getDay())) return
-		if (hour !== "*" && !hour.has(now.getHours())) return
-		if (min !== "*" && !min.has(now.getMinutes())) return
+		if (month !== "*" && !month.has(now.getUTCMonth() + 1)) return
+		if (date !== "*" && !date.has(now.getUTCDate())) return
+		if (day !== "*" && !day.has(now.getUTCDay())) return
+		if (hour !== "*" && !hour.has(now.getUTCHours())) return
+		if (min !== "*" && !min.has(now.getUTCMinutes())) return
 		action()
 	}
 	const timeout = setInterval(run, 1000 * 60)
@@ -1476,4 +1555,30 @@ export function randAlphaNum(len: number = 8) {
 		str += alphaNumChars.charAt(Math.floor(Math.random() * alphaNumChars.length))
 	}
 	return str
+}
+
+export const ansi = {
+	reset:     "\x1b[0m",
+	black:     "\x1b[30m",
+	red:       "\x1b[31m",
+	green:     "\x1b[32m",
+	yellow:    "\x1b[33m",
+	blue:      "\x1b[34m",
+	magenta:   "\x1b[35m",
+	cyan:      "\x1b[36m",
+	white:     "\x1b[37m",
+	blackbg:   "\x1b[40m",
+	redbg:     "\x1b[41m",
+	greenbg:   "\x1b[42m",
+	yellowbg:  "\x1b[43m",
+	bluebg:    "\x1b[44m",
+	magentabg: "\x1b[45m",
+	cyanbg:    "\x1b[46m",
+	whitebg:   "\x1b[47m",
+	bold:      "\x1b[1m",
+	dim:       "\x1b[2m",
+	italic:    "\x1b[3m",
+	underline: "\x1b[4m",
+	rgb: (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`,
+	rgbbg: (r: number, g: number, b: number) => `\x1b[48;2;${r};${g};${b}m`,
 }
