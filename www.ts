@@ -31,15 +31,8 @@ export type Req = {
 export type Res = {
 	headers: Headers,
 	status: number,
-	send: (
-		data?:
-			| ReadableStream
-			| BlobPart
-			| FormData
-			| URLSearchParams
-			| null,
-		opt?: ResOpt,
-	) => void,
+	body: null | BodyInit,
+	send: (data?: BodyInit | null, opt?: ResOpt) => void,
 	sendText: (content: string, opt?: ResOpt) => void,
 	sendHTML: (content: string, opt?: ResOpt) => void,
 	sendJSON: <T = any>(content: T, opt?: ResOpt) => void,
@@ -79,7 +72,6 @@ export class Registry<T> extends Map<number, T> {
 }
 
 export type Server = {
-	// TODO: return event controllers?
 	use: (handler: Handler) => void,
 	error: (handler: ErrorHandler) => void,
 	notFound: (action: NotFoundHandler) => void,
@@ -239,9 +231,11 @@ export function createServer(opts: ServerOpts = {}): Server {
 			const res: Res = {
 				headers: new Headers(),
 				status: 200,
-				send(data, opt = {}) {
+				body: null,
+				send(body, opt = {}) {
 					if (done) return
-					resolve(new Response(data, {
+					this.body = body ?? null
+					resolve(new Response(body, {
 						headers: {
 							...this.headers.toJSON(),
 							...(opt.headers ?? {}),
@@ -506,30 +500,56 @@ export type RateLimiterOpts = {
 	handler: Handler,
 }
 
-// TODO: clear cache after time
+type Timer = {
+	time: number,
+	trigger: number,
+	action: () => void,
+}
+
 export function rateLimiter(opts: RateLimiterOpts): Handler {
-	const record: Record<string, number[]> = {}
+	const reqCounter: Record<string, number> = {}
+	const dt = 100
+	const timers = new Registry<Timer>()
+	const wait = (t: number, action: () => void) => {
+		timers.push({
+			time: 0,
+			trigger: t * 1000,
+			action: action,
+		})
+	}
+	setInterval(() => {
+		for (const [id, timer] of timers) {
+			timer.time += dt
+			if (timer.time >= timer.trigger) {
+				timer.action()
+				timers.delete(id)
+			}
+		}
+	}, dt)
 	return (ctx) => {
 		const ip = ctx.req.getIP()
 		if (!ip) return ctx.next()
-		if (!record[ip]) {
-			record[ip] = []
+		if (!(ip in reqCounter)) {
+			reqCounter[ip] = 0
 		}
-		record[ip].push(new Date().getTime())
-		if (record[ip].length > opts.limit) {
-			const elapsed = (new Date().getTime() - record[ip][0]) / 1000
-			if (elapsed >= opts.time) {
-				record[ip].shift()
-				return ctx.next()
-			} else {
-				record[ip].pop()
-				ctx.res.status = 429
-				ctx.res.headers.append("Retry-After", Math.ceil(opts.time - elapsed) + "")
-				return opts.handler(ctx)
+		reqCounter[ip] += 1
+		wait(opts.time, () => {
+			reqCounter[ip] -= 1
+			if (reqCounter[ip] === 0) {
+				delete reqCounter[ip]
 			}
+		})
+		if (reqCounter[ip] > opts.limit) {
+			ctx.res.status = 429
+			ctx.res.headers.append("Retry-After", opts.time.toString())
+			return opts.handler(ctx)
 		}
 		return ctx.next()
 	}
+}
+
+export function toHTTPDate(d: Date) {
+	return d.toUTCString()
 }
 
 export type LoggerOpts = {
@@ -537,6 +557,17 @@ export type LoggerOpts = {
 	file?: string,
 	stdio?: boolean,
 	skip?: (req: Req, res: Res) => boolean,
+}
+
+// TODO
+function getBodySize(body: BodyInit) {
+	if (typeof body === "string") {
+		return Buffer.byteLength(body)
+	} else if (body instanceof Blob) {
+		return body.size
+	} else if (body instanceof ArrayBuffer) {
+		return body.byteLength
+	}
 }
 
 type LoggerMsgOpts = {
@@ -569,7 +600,9 @@ export function logger(opts: LoggerOpts = {}): Handler {
 			const date = endTime.getUTCDate().toString().padStart(2, "0")
 			const hour = endTime.getUTCHours().toString().padStart(2, "0")
 			const minute = endTime.getUTCMinutes().toString().padStart(2, "0")
-			msg.push(`${a.dim}[${year}-${month}-${date} ${hour}:${minute}]${a.reset}`)
+			const seconds = endTime.getUTCSeconds().toString().padStart(2, "0")
+			// TODO: why this turns dim red for 4xx and 5xx responses?
+			msg.push(`${a.dim}[${year}-${month}-${date} ${hour}:${minute}:${seconds}]${a.reset}`)
 			const statusClor = {
 				"1": a.yellow,
 				"2": a.green,
@@ -581,6 +614,10 @@ export function logger(opts: LoggerOpts = {}): Handler {
 			msg.push(req.method)
 			msg.push(req.url.pathname)
 			msg.push(`${a.dim}${endTime.getTime() - startTime.getTime()}ms${a.reset}`)
+			const size = res.body ? getBodySize(res.body) : 0
+			if (size) {
+				msg.push(`${a.dim}${(size / 1000).toFixed(2)}kb${a.reset}`)
+			}
 			return msg.join(" ")
 		}
 		const startTime = new Date()

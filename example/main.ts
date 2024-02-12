@@ -178,7 +178,7 @@ server.use(logger({
 
 server.use(rateLimiter({
 	time: 1,
-	limit: 100,
+	limit: 200,
 	handler: ({ req, res, next }) => {
 		return res.send("too many requests")
 	},
