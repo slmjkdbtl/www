@@ -1,4 +1,4 @@
-// helpers for the world wide web with Bun
+// helper functions for the world wide web with Bun
 
 import * as fs from "fs"
 import * as path from "path"
@@ -319,6 +319,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 	const handlers: Handler[] = []
 	const use = (handler: Handler) => handlers.push(handler)
 	let errHandler: ErrorHandler = ({ req, res, next }, err) => {
+		// TODO: async error doesn't send response in dev mode
 		if (isDev) throw err
 		console.error(err)
 		res.status = 500
@@ -500,32 +501,8 @@ export type RateLimiterOpts = {
 	handler: Handler,
 }
 
-type Timer = {
-	time: number,
-	trigger: number,
-	action: () => void,
-}
-
 export function rateLimiter(opts: RateLimiterOpts): Handler {
 	const reqCounter: Record<string, number> = {}
-	const dt = 100
-	const timers = new Registry<Timer>()
-	const wait = (t: number, action: () => void) => {
-		timers.push({
-			time: 0,
-			trigger: t * 1000,
-			action: action,
-		})
-	}
-	setInterval(() => {
-		for (const [id, timer] of timers) {
-			timer.time += dt
-			if (timer.time >= timer.trigger) {
-				timer.action()
-				timers.delete(id)
-			}
-		}
-	}, dt)
 	return (ctx) => {
 		const ip = ctx.req.getIP()
 		if (!ip) return ctx.next()
@@ -533,15 +510,14 @@ export function rateLimiter(opts: RateLimiterOpts): Handler {
 			reqCounter[ip] = 0
 		}
 		reqCounter[ip] += 1
-		wait(opts.time, () => {
+		setTimeout(() => {
 			reqCounter[ip] -= 1
 			if (reqCounter[ip] === 0) {
 				delete reqCounter[ip]
 			}
-		})
+		}, opts.time * 1000)
 		if (reqCounter[ip] > opts.limit) {
 			ctx.res.status = 429
-			ctx.res.headers.append("Retry-After", opts.time.toString())
 			return opts.handler(ctx)
 		}
 		return ctx.next()
@@ -553,20 +529,47 @@ export function toHTTPDate(d: Date) {
 }
 
 export type LoggerOpts = {
-	format?: string,
 	file?: string,
 	stdio?: boolean,
-	skip?: (req: Req, res: Res) => boolean,
+	filter?: (req: Req, res: Res) => boolean,
 }
 
-// TODO
-function getBodySize(body: BodyInit) {
+export function toReadableSize(byteSize: number) {
+	const toFixed = (n: number) => Number(n.toFixed(2))
+	if (byteSize >= Math.pow(1024, 4)) {
+		return `${toFixed(byteSize / 1024 / 1024 / 1024 / 1024)}tb`
+	} else if (byteSize >= Math.pow(1024, 3)) {
+		return `${toFixed(byteSize / 1024 / 1024 / 1024)}gb`
+	} else if (byteSize >= Math.pow(1024, 2)) {
+		return `${toFixed(byteSize / 1024 / 1024)}mb`
+	} else if (byteSize >= Math.pow(1024, 1)) {
+		return `${toFixed(byteSize / 1024)}kb`
+	} else {
+		return `${byteSize}b`
+	}
+}
+
+// TODO: is there a way to get bun calculated Content-Length result?
+// TODO: ReadableStream?
+export function getBodySize(body: BodyInit) {
 	if (typeof body === "string") {
 		return Buffer.byteLength(body)
 	} else if (body instanceof Blob) {
 		return body.size
-	} else if (body instanceof ArrayBuffer) {
+	} else if (body instanceof ArrayBuffer || "byteLength" in body) {
 		return body.byteLength
+	} else if (body instanceof URLSearchParams) {
+		return Buffer.byteLength(body.toString())
+	} else if (body instanceof FormData) {
+		let size = 0
+		body.forEach((v, k) => {
+			if (typeof v === "string") {
+				size += Buffer.byteLength(v)
+			} else {
+				size += v.size
+			}
+		})
+		return size
 	}
 }
 
@@ -575,11 +578,15 @@ type LoggerMsgOpts = {
 }
 
 // TODO: log only err / info to file / stdio?
-// TODO: get content length
 // TODO: can there be a onStart() to record time
 // TODO: catch error
 export function logger(opts: LoggerOpts = {}): Handler {
 	return ({ req, res, next }) => {
+		if (opts.filter) {
+			if (!opts.filter(req, res)) {
+				return next()
+			}
+		}
 		const genMsg = (msgOpts: LoggerMsgOpts = {}) => {
 			const a = mapValues(ansi, (v) => {
 				if (msgOpts.color) {
@@ -616,7 +623,7 @@ export function logger(opts: LoggerOpts = {}): Handler {
 			msg.push(`${a.dim}${endTime.getTime() - startTime.getTime()}ms${a.reset}`)
 			const size = res.body ? getBodySize(res.body) : 0
 			if (size) {
-				msg.push(`${a.dim}${(size / 1000).toFixed(2)}kb${a.reset}`)
+				msg.push(`${a.dim}${toReadableSize(size)}${a.reset}`)
 			}
 			return msg.join(" ")
 		}
@@ -720,8 +727,9 @@ export type WhereValue =
 	| { value: string, op: WhereOp }
 	| { op: WhereOpSingle }
 
-export type DBVars = Record<string, string | number | boolean | Uint8Array>
-export type DBData = Record<string, string | number | boolean | Uint8Array>
+export type DBVal = string | number | boolean | Uint8Array | undefined | null
+export type DBVars = Record<string, DBVal>
+export type DBData = Record<string, DBVal>
 export type WhereCondition = Record<string, WhereValue>
 export type OrderCondition = {
 	columns: string[],
@@ -1157,6 +1165,45 @@ ${genWhereSQL(where, vars)}
 
 }
 
+export type AnalyticsOpts = {
+	dbname: string,
+	filter?: (req: Req) => boolean,
+}
+
+export function createAnalytics(dbname: string = "analytics.db", opts?: AnalyticsOpts) {
+
+	const db = createDatabase(dbname)
+	const reqTable = db.table("request", {
+		"id":     { type: "INTEGER", primaryKey: true, autoIncrement: true },
+		"method": { type: "TEXT" },
+		"path":   { type: "TEXT" },
+		"params": { type: "TEXT" },
+		"ip":     { type: "TEXT", allowNull: true },
+	}, {
+		timeCreated: true,
+	})
+
+	const handler: Handler = ({ req, next }) => {
+		if (opts?.filter) {
+			if (!opts.filter(req)) {
+				return next()
+			}
+		}
+		reqTable.insert({
+			"method": req.method,
+			"path": req.url.pathname,
+			"params": req.url.search,
+			"ip": req.getIP(),
+		})
+		return next()
+	}
+
+	return {
+		handler: handler,
+	}
+
+}
+
 export function trydo<T>(action: () => T, def: T) {
 	try {
 		return action()
@@ -1200,6 +1247,12 @@ export async function getReqData(req: Request) {
 	}
 }
 
+export function formToJSON(form: FormData) {
+	const json: any = {}
+	form.forEach((v, k) => json[k] = v)
+	return json
+}
+
 export function getFormText(form: FormData, key: string): string | undefined {
 	const t = form.get(key)
 	if (typeof t === "string") {
@@ -1221,13 +1274,32 @@ export async function getFormBlobData(form: FormData, key: string) {
 	}
 }
 
-type HTMLChildren = string | number | undefined | null
+export function getBasicAuth(req: Req): [string, string] | void {
+	const auth = req.headers.get("Authorization")
+	if (!auth) return
+	const [ scheme, cred ] = auth.split(" ")
+	if (scheme.toLowerCase() !== "basic") return
+	if (!cred) return
+	const [ user, pass ] = atob(cred).split(":")
+	return [ user, pass ]
+}
+
+export function getBearerAuth(req: Req): string | void {
+	const auth = req.headers.get("Authorization")
+	if (!auth) return
+	const [ scheme, cred ] = auth.split(" ")
+	if (scheme.toLowerCase() !== "bearer") return
+	return cred
+}
+
+export type HTMLChild = string | number | undefined | null
+export type HTMLChildren = HTMLChild | HTMLChild[]
 
 // html text builder
 export function h(
 	tag: string,
 	attrs: Record<string, any>,
-	children?: HTMLChildren | HTMLChildren[]
+	children?: HTMLChildren
 ) {
 
 	let html = `<${tag}`
@@ -1579,7 +1651,8 @@ export function cron(rule: CronRule, action: () => void) {
 
 const alphaNumChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-export function randAlphaNum(len: number = 8) {
+// TODO: filter bad words?
+export function randAlphaNum(len: number = 11) {
 	let str = ""
 	for (let i = 0; i < len; i++) {
 		str += alphaNumChars.charAt(Math.floor(Math.random() * alphaNumChars.length))

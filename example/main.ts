@@ -19,6 +19,7 @@ import {
 	logger,
 	randAlphaNum,
 	Req,
+	createAnalytics,
 } from "./../www"
 
 import {
@@ -41,6 +42,8 @@ cron("* * * * *", () => {
 
 const server = createServer({ port: 8000 })
 console.log(`Listening on ${server.url.toString()}`)
+
+const analytics = createAnalytics("data/analytics.db")
 
 const styles = {
 	"*": {
@@ -134,7 +137,7 @@ type FormFieldSet = {
 type FormOpts = {
 	action: string,
 	endpoint: string,
-	method: string,
+	method: "GET" | "POST",
 	fields?: FormField[],
 	fieldsets?: FormFieldSet[],
 }
@@ -172,13 +175,15 @@ const form = (opts: FormOpts) => {
 	])
 }
 
+server.use(analytics.handler)
+
 server.use(logger({
 	file: "data/log.txt",
 }))
 
 server.use(rateLimiter({
 	time: 1,
-	limit: 200,
+	limit: 100,
 	handler: ({ req, res, next }) => {
 		return res.send("too many requests")
 	},
@@ -587,3 +592,8 @@ server.notFound(({ res }) => {
 	res.status = 404
 	res.sendText("not found")
 })
+
+server.use(route("GET", "/test", async ({ req, res }) => {
+	const form = await req.formData()
+	return res.sendText("Success!")
+}))
