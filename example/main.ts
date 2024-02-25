@@ -19,7 +19,6 @@ import {
 	logger,
 	randAlphaNum,
 	Req,
-	createAnalytics,
 } from "./../www"
 
 import {
@@ -42,8 +41,6 @@ cron("* * * * *", () => {
 
 const server = createServer({ port: 8000 })
 console.log(`Listening on ${server.url.toString()}`)
-
-const analytics = createAnalytics("data/analytics.db")
 
 const styles = {
 	"*": {
@@ -175,10 +172,9 @@ const form = (opts: FormOpts) => {
 	])
 }
 
-server.use(analytics.handler)
-
 server.use(logger({
 	file: "data/log.txt",
+	db: "data/log.db",
 }))
 
 server.use(rateLimiter({
@@ -582,7 +578,6 @@ server.use(route("GET", "/err", () => {
 }))
 
 server.error(({ res }, err) => {
-	if (isDev) throw err
 	res.status = 500
 	console.error(err)
 	res.sendText(`internal server error`)

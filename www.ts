@@ -38,7 +38,6 @@ export type Res = {
 	sendJSON: <T = any>(content: T, opt?: ResOpt) => void,
 	sendFile: (path: string, opt?: ResOpt) => void,
 	redirect: (location: string, opt?: ResOpt) => void,
-	onFinish: (action: () => void) => void,
 }
 
 export type ResOpt = {
@@ -51,6 +50,8 @@ export type Ctx = {
 	res: Res,
 	next: () => void,
 	upgrade: (opts?: ServerUpgradeOpts) => boolean,
+	onFinish: (action: () => void) => void,
+	onError: (action: (e: Error) => void) => void,
 }
 
 export type Handler = (ctx: Ctx) => void
@@ -228,6 +229,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 				},
 			}
 			const onFinishEvents: Array<() => void> = []
+			const onErrorEvents: Array<(e: Error) => void> = []
 			const res: Res = {
 				headers: new Headers(),
 				status: 200,
@@ -269,9 +271,6 @@ export function createServer(opts: ServerOpts = {}): Server {
 					this.headers.append("Location", location)
 					this.send(null, opt)
 				},
-				onFinish(action) {
-					onFinishEvents.push(action)
-				},
 			}
 			const curHandlers = [...handlers]
 			function next() {
@@ -287,6 +286,12 @@ export function createServer(opts: ServerOpts = {}): Server {
 						if (success) resolve(undefined)
 						return success
 					},
+					onFinish(action) {
+						onFinishEvents.push(action)
+					},
+					onError(action) {
+						onErrorEvents.push(action)
+					},
 				}
 				if (h) {
 					try {
@@ -295,11 +300,13 @@ export function createServer(opts: ServerOpts = {}): Server {
 							res.catch((e) => {
 								if (errHandler) {
 									errHandler(ctx, e)
+									onErrorEvents.forEach((f) => f(e))
 								}
 							})
 						}
 					} catch (e) {
 						errHandler(ctx, e as Error)
+						onErrorEvents.forEach((f) => f(e as Error))
 					}
 				} else {
 					notFoundHandler(ctx)
@@ -319,8 +326,6 @@ export function createServer(opts: ServerOpts = {}): Server {
 	const handlers: Handler[] = []
 	const use = (handler: Handler) => handlers.push(handler)
 	let errHandler: ErrorHandler = ({ req, res, next }, err) => {
-		// TODO: async error doesn't send response in dev mode
-		if (isDev) throw err
 		console.error(err)
 		res.status = 500
 		res.sendText(`internal server error`)
@@ -529,9 +534,11 @@ export function toHTTPDate(d: Date) {
 }
 
 export type LoggerOpts = {
-	file?: string,
-	stdio?: boolean,
 	filter?: (req: Req, res: Res) => boolean,
+	db?: string,
+	file?: string,
+	stdout?: boolean,
+	stderr?: boolean,
 }
 
 export function toReadableSize(byteSize: number) {
@@ -573,21 +580,31 @@ export function getBodySize(body: BodyInit) {
 	}
 }
 
-type LoggerMsgOpts = {
-	color?: boolean,
-}
-
-// TODO: log only err / info to file / stdio?
 // TODO: can there be a onStart() to record time
-// TODO: catch error
 export function logger(opts: LoggerOpts = {}): Handler {
-	return ({ req, res, next }) => {
+	let reqTable: Table | null = null
+	if (opts.db) {
+		const db = createDatabase(opts.db)
+		reqTable = db.table("request", {
+			"id":     { type: "INTEGER", primaryKey: true, autoIncrement: true },
+			"method": { type: "TEXT" },
+			"path":   { type: "TEXT" },
+			"params": { type: "TEXT" },
+			"ip":     { type: "TEXT", allowNull: true },
+			"err":    { type: "TEXT", allowNull: true },
+		}, {
+			timeCreated: true,
+		})
+	}
+	return ({ req, res, next, onFinish, onError }) => {
 		if (opts.filter) {
 			if (!opts.filter(req, res)) {
 				return next()
 			}
 		}
-		const genMsg = (msgOpts: LoggerMsgOpts = {}) => {
+		const genMsg = (msgOpts: {
+			color?: boolean,
+		} = {}) => {
 			const a = mapValues(ansi, (v) => {
 				if (msgOpts.color) {
 					return v
@@ -628,19 +645,25 @@ export function logger(opts: LoggerOpts = {}): Handler {
 			return msg.join(" ")
 		}
 		const startTime = new Date()
-		res.onFinish(() => {
-			if (opts.stdio !== false) {
-				const log = {
-					"1": console.log,
-					"2": console.log,
-					"3": console.log,
-					"4": console.error,
-					"5": console.error,
-				}[res.status.toString()[0]] ?? console.log
-				log(genMsg({ color: true }))
+		onFinish(() => {
+			if (opts.stdout !== false) {
+				console.log(genMsg({ color: true }))
 			}
 			if (opts.file) {
 				fs.appendFileSync(opts.file, genMsg({ color: false }) + "\n", "utf8")
+			}
+			if (reqTable) {
+				reqTable.insert({
+					"method": req.method,
+					"path": req.url.pathname,
+					"params": req.url.search,
+					"ip": req.getIP(),
+				})
+			}
+		})
+		onError((e) => {
+			if (reqTable) {
+				// TODO
 			}
 		})
 		return next()
@@ -805,6 +828,7 @@ export type Database = {
 		schema: TableSchema,
 		opts?: O,
 	) => Table<TableData<D, O>>,
+	getTable: <D extends DBData = any>(name: string) => Table<D> | void,
 	transaction: (action: () => void) => void,
 	close: () => void,
     serialize: (name?: string) => Buffer,
@@ -909,6 +933,12 @@ export function createDatabase(dbname: string, opts: CreateDatabaseOpts = {}): D
 
 	function run(sql: string) {
 		bdb.run(sql.trim())
+	}
+
+	const tables: Record<string, Table<any>> = {}
+
+	function getTable(name: string) {
+		return tables[name]
 	}
 
 	function table<D extends Record<string, any>>(
@@ -1141,7 +1171,7 @@ ${genWhereSQL(where, vars)}
 			}
 		}
 
-		return {
+		const t =  {
 			name: tableName,
 			select,
 			find,
@@ -1154,52 +1184,18 @@ ${genWhereSQL(where, vars)}
 			schema,
 		}
 
+		tables[tableName] = t
+
+		return t
+
 	}
 
 	return {
 		table,
+		getTable,
 		transaction,
 		close: bdb.close,
 		serialize: bdb.serialize,
-	}
-
-}
-
-export type AnalyticsOpts = {
-	dbname: string,
-	filter?: (req: Req) => boolean,
-}
-
-export function createAnalytics(dbname: string = "analytics.db", opts?: AnalyticsOpts) {
-
-	const db = createDatabase(dbname)
-	const reqTable = db.table("request", {
-		"id":     { type: "INTEGER", primaryKey: true, autoIncrement: true },
-		"method": { type: "TEXT" },
-		"path":   { type: "TEXT" },
-		"params": { type: "TEXT" },
-		"ip":     { type: "TEXT", allowNull: true },
-	}, {
-		timeCreated: true,
-	})
-
-	const handler: Handler = ({ req, next }) => {
-		if (opts?.filter) {
-			if (!opts.filter(req)) {
-				return next()
-			}
-		}
-		reqTable.insert({
-			"method": req.method,
-			"path": req.url.pathname,
-			"params": req.url.search,
-			"ip": req.getIP(),
-		})
-		return next()
-	}
-
-	return {
-		handler: handler,
 	}
 
 }
