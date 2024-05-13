@@ -1,5 +1,9 @@
 // helper functions for the world wide web with Bun
 
+if (typeof Bun === "undefined") {
+	throw new Error("Requires Bun")
+}
+
 import * as fs from "fs"
 import * as path from "path"
 import type {
@@ -37,12 +41,16 @@ export type Res = {
 	sendHTML: (content: string, opt?: ResOpt) => void,
 	sendJSON: <T = any>(content: T, opt?: ResOpt) => void,
 	sendFile: (path: string, opt?: ResOpt) => void,
-	redirect: (location: string, opt?: ResOpt) => void,
+	redirect: (url: string, status?: number) => void,
 }
 
 export type ResOpt = {
 	headers?: HeadersInit,
 	status?: number,
+}
+
+export type SendFileOpt = ResOpt & {
+	mimes?: Record<string, string>,
 }
 
 export type Ctx = {
@@ -228,51 +236,89 @@ export function createServer(opts: ServerOpts = {}): Server {
 					return cookies
 				},
 			}
+
 			const onFinishEvents: Array<() => void> = []
 			const onErrorEvents: Array<(e: Error) => void> = []
-			const res: Res = {
-				headers: new Headers(),
-				status: 200,
-				body: null,
-				send(body, opt = {}) {
-					if (done) return
-					this.body = body ?? null
-					resolve(new Response(body, {
-						headers: {
-							...this.headers.toJSON(),
-							...(opt.headers ?? {}),
-						},
-						status: opt.status ?? this.status,
-					}))
-					done = true
-					onFinishEvents.forEach((f) => f())
-				},
-				sendText(content, opt) {
-					this.headers.append("Content-Type", "text/plain; charset=utf-8")
-					this.send(content, opt)
-				},
-				sendHTML(content, opt) {
-					this.headers.append("Content-Type", "text/html; charset=utf-8")
-					this.send(content, opt)
-				},
-				sendJSON(content, opt) {
-					this.headers.append("Content-Type", "application/json")
-					this.send(JSON.stringify(content), opt)
-				},
-				sendFile(path, opt) {
-					if (!isFileSync(path)) return
-					const file = Bun.file(path)
-					if (file.size === 0) return
-					this.headers.append("Content-Type", file.type)
-					this.send(file, opt)
-				},
-				redirect(location: string, opt) {
-					this.status = 302
-					this.headers.append("Location", location)
-					this.send(null, opt)
-				},
+			const headers = new Headers()
+			let status = 200
+			let body: null | BodyInit = null
+
+			function getEtag() {
+				const ifNoneMatch = req.headers.get("If-None-Match")
+				if (!ifNoneMatch) return null
+				return ifNoneMatch
+					.replace(/^W\//, "")
+					.replace(/^"/, "")
+					.replace(/"$/, "")
 			}
+
+			function finish(res: Response) {
+				if (done) return
+				resolve(res)
+				done = true
+				onFinishEvents.forEach((f) => f())
+			}
+
+			function send(b?: BodyInit | null, opt: ResOpt = {}) {
+				body = b ?? null
+				finish(new Response(body, {
+					headers: {
+						...headers.toJSON(),
+						...(opt.headers ?? {}),
+					},
+					status: opt.status ?? status,
+				}))
+			}
+
+			function sendText(content: string, opt: ResOpt = {}) {
+				headers.append("Content-Type", "text/plain; charset=utf-8")
+				send(content, opt)
+			}
+
+			function sendHTML(content: string, opt: ResOpt = {}) {
+				headers.append("Content-Type", "text/html; charset=utf-8")
+				send(content, opt)
+			}
+
+			function sendJSON(content: unknown, opt: ResOpt = {}) {
+				headers.append("Content-Type", "application/json; charset=utf-8")
+				send(JSON.stringify(content), opt)
+			}
+
+			function sendFile(p: string, opt: SendFileOpt = {}) {
+				if (!isFileSync(p)) return
+				const file = Bun.file(p)
+				if (file.size === 0) return
+				const mtimeServer = req.headers.get("If-Modified-Since")
+				const mtimeClient = toHTTPDate(new Date(file.lastModified))
+				if (mtimeServer === mtimeClient) {
+					return send(null, { status: 304 })
+				}
+				headers.append("Last-Modified", mtimeClient)
+				headers.append("Cache-Control", "no-cache")
+				send(file, opt)
+			}
+
+			function redirect(url: string, status: number = 302) {
+				finish(Response.redirect(url, status))
+			}
+
+			const res: Res = {
+				get status() { return status },
+				set status(s) { status = s },
+				get body() { return body },
+				set body(b) { body = b },
+				headers,
+				send,
+				sendText,
+				sendHTML,
+				sendJSON,
+				sendFile,
+				redirect,
+			}
+
 			const curHandlers = [...handlers]
+
 			function next() {
 				if (done) return
 				const h = curHandlers.shift()
@@ -578,6 +624,7 @@ export function getBodySize(body: BodyInit) {
 		})
 		return size
 	}
+	return 0
 }
 
 // TODO: can there be a onStart() to record time
@@ -750,7 +797,7 @@ export type WhereValue =
 	| { value: string, op: WhereOp }
 	| { op: WhereOpSingle }
 
-export type DBVal = string | number | boolean | Uint8Array | undefined | null
+export type DBVal = string | number | boolean | Uint8Array | null
 export type DBVars = Record<string, DBVal>
 export type DBData = Record<string, DBVal>
 export type WhereCondition = Record<string, WhereValue>
@@ -1249,18 +1296,20 @@ export function formToJSON(form: FormData) {
 	return json
 }
 
-export function getFormText(form: FormData, key: string): string | undefined {
+export function getFormText(form: FormData, key: string): string | null {
 	const t = form.get(key)
 	if (typeof t === "string") {
 		return t
 	}
+	return null
 }
 
-export function getFormBlob(form: FormData, key: string): Blob | undefined {
+export function getFormBlob(form: FormData, key: string): Blob | null {
 	const b = form.get(key)
 	if (b && b instanceof Blob && b.size > 0) {
 		return b
 	}
+	return null
 }
 
 export async function getFormBlobData(form: FormData, key: string) {
@@ -1291,10 +1340,17 @@ export function getBearerAuth(req: Req): string | void {
 export type HTMLChild = string | number | undefined | null
 export type HTMLChildren = HTMLChild | HTMLChild[]
 
+export type HTMLAttr =
+	| boolean
+	| string
+	| number
+	| string[]
+	| Record<string, string>
+
 // html text builder
 export function h(
 	tag: string,
-	attrs: Record<string, any>,
+	attrs: Record<string, HTMLAttr>,
 	children?: HTMLChildren
 ) {
 
@@ -1560,17 +1616,22 @@ export function csslib(opt: CSSLibOpts = {}) {
 }
 
 // TODO: not global?
-const buildCache: Record<string, string> = {}
+const buildCache: Record<string, {
+	lastModified: number,
+	js: string,
+}> = {}
 
 // TODO: better error handling?
-export async function js(file: string) {
-	if (!isDev) {
-		if (buildCache[file]) {
-			return Promise.resolve(buildCache[file])
+export async function js(p: string) {
+	const file = Bun.file(p)
+	const cache = buildCache[p]
+	if (cache) {
+		if (file.lastModified === cache.lastModified) {
+			return Promise.resolve(cache.js)
 		}
 	}
 	const res = await Bun.build({
-		entrypoints: [file],
+		entrypoints: [p],
 		minify: !isDev,
 		sourcemap: isDev ? "inline" : "none",
 		target: "browser",
@@ -1580,8 +1641,9 @@ export async function js(file: string) {
 			throw new Error(`Expected 1 output, found ${res.outputs.length}`)
 		}
 		const code = await res.outputs[0].text()
-		if (!isDev) {
-			buildCache[file] = code
+		buildCache[p] = {
+			lastModified: file.lastModified,
+			js: code,
 		}
 		return code
 	} else {
@@ -1648,7 +1710,7 @@ export function cron(rule: CronRule, action: () => void) {
 const alphaNumChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 // TODO: filter bad words?
-export function randAlphaNum(len: number = 11) {
+export function randAlphaNum(len: number = 8) {
 	let str = ""
 	for (let i = 0; i < len; i++) {
 		str += alphaNumChars.charAt(Math.floor(Math.random() * alphaNumChars.length))

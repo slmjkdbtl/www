@@ -577,6 +577,10 @@ server.use(route("GET", "/err", () => {
 	throw new Error("yep")
 }))
 
+server.use(route("GET", "/err2", async () => {
+	throw new Error("yep")
+}))
+
 server.error(({ res }, err) => {
 	res.status = 500
 	console.error(err)
