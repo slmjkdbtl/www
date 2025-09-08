@@ -1,25 +1,17 @@
 // a twitter clone
 
 import {
-	isDev,
 	createServer,
-	css,
-	csslib,
-	h,
-	js,
-	jsData,
 	files,
-	dir,
+	filebrowser,
 	route,
 	getFormBlob,
 	getFormText,
-	cron,
 	kvList,
 	rateLimiter,
 	logger,
-	randAlphaNum,
 	Req,
-} from "./../www"
+} from "./../server"
 
 import {
 	db,
@@ -30,6 +22,20 @@ import {
 	postImgTable,
 	chatTable,
 } from "./db"
+
+import {
+	css,
+	csslib,
+	h,
+	js,
+	jsData,
+} from "./../html"
+
+import {
+	isDev,
+	randAlphaNum,
+	cron,
+} from "./../utils"
 
 import * as crypto from "crypto"
 
@@ -172,7 +178,7 @@ const form = (opts: FormOpts) => {
 	])
 }
 
-server.use(logger({
+server.use(await logger({
 	file: "data/log.txt",
 	db: "data/log.db",
 }))
@@ -546,6 +552,14 @@ server.use(route("POST", "/form/post", async ({ req, res, next }) => {
 	return res.redirect("/")
 }))
 
+server.use(route("GET", "/game", async ({ req, res, next }) => {
+	return res.sendHTML(page([
+		h("title", {}, "game"),
+	], [
+		h("script", {}, await js("client/game.ts"))
+	]))
+}))
+
 // TODO: why req.url.protocol isn't ws?
 server.use(route("GET", "/ws", ({ req, res, upgrade, next }) => {
 	const success = upgrade()
@@ -557,11 +571,12 @@ server.use(route("GET", "/ws", ({ req, res, upgrade, next }) => {
 
 server.ws.onMessage((ws, msg) => {
 	const data = JSON.parse(msg as string)
-	server.ws.broadcast(JSON.stringify({
-		type: "MESSAGE",
-		user: ws.data.id,
-		msg: data.msg,
-	}))
+	// TODO: use pub sub instead of broadcast
+	// server.ws.broadcast(JSON.stringify({
+		// type: "MESSAGE",
+		// user: ws.data.id,
+		// msg: data.msg,
+	// }))
 })
 
 server.ws.onOpen((ws) => {
@@ -571,7 +586,7 @@ server.ws.onOpen((ws) => {
 	}))
 })
 
-server.use(dir("/dir", "."))
+server.use(filebrowser("/dir", "."))
 
 server.use(route("GET", "/err", () => {
 	throw new Error("yep")

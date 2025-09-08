@@ -1,7 +1,16 @@
 {
+	"name": "www",
 	"type": "module",
 	"devDependencies": {
-		"@types/bun": "1.0.5",
-		"typescript": "5.4.5"
+		"@types/bun": "1.2.21",
+		"typescript": "5.9.2"
+	},
+	"exports": {
+		"./server": "./server.ts",
+		"./db": "./db.ts",
+		"./html": "./html.ts",
+		"./math": "./math.ts",
+		"./game": "./game.ts",
+		"./utils": "./utils.ts"
 	}
 }

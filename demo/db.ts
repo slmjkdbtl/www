@@ -1,8 +1,8 @@
 import {
 	createDatabase,
-} from "./../www"
+} from "./../db"
 
-export const db = createDatabase("data/data.db")
+export const db = await createDatabase("data/data.db")
 
 export type DBBlob = {
 	id: string,

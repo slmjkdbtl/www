@@ -1,13 +1,12 @@
 {
 	"compilerOptions": {
-		"lib": ["ESNext"],
+		"lib": ["esnext", "dom"],
 		"module": "esnext",
-		"target": "esnext",
+		"target": "es2021",
 		"moduleResolution": "bundler",
 		"moduleDetection": "force",
 		"allowImportingTsExtensions": true,
 		"noEmit": true,
-		"composite": true,
 		"strict": true,
 		"downlevelIteration": true,
 		"skipLibCheck": true,

@@ -1,3 +1,5 @@
-.PHONY: dev
-dev:
-	cd example && DEV=1 bun run --watch main.ts
+DEMO := server
+
+.PHONY: run
+run:
+	cd demo && DEV=1 bun run --watch $(DEMO).ts
