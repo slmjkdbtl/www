@@ -1,13 +1,15 @@
 import {
-	createApp,
-} from "./../../app"
+	Sprite,
+	createGame,
+	load,
+} from "./../../game"
 
 import {
-	createGfx,
-} from "./../../gfx"
-
-import {
+	Vec2,
 	vec2,
+	rgb,
+	hsl2rgb,
+	wave,
 } from "./../../math"
 
 const WIDTH = 640
@@ -15,21 +17,17 @@ const HEIGHT = 480
 const SCALE = 1
 const ANIM_FPS = 8
 
-const app = createApp({
-	width: WIDTH * SCALE,
-	height: HEIGHT * SCALE,
-})
-
-const gfx = createGfx({
-	canvas: app.canvas,
+const g = createGame({
 	width: WIDTH,
 	height: HEIGHT,
-	background: [255, 255, 255],
+	// pixelDensity: 1,
+	// crisp: true,
+	// background: [255, 255, 255],
 })
 
-app.focus()
+g.focus()
 
-function nfiles(name: string, num: number) {
+function replaceSeq(name: string, num: number) {
 	const files = []
 	for (let i = 1; i <= num; i++) {
 		files.push(name.replace("?", i + ""))
@@ -38,54 +36,97 @@ function nfiles(name: string, num: number) {
 }
 
 function framen(n: number) {
-	return Math.floor(app.time() * ANIM_FPS % n)
+	return Math.floor(g.time() * ANIM_FPS % n)
 }
 
-;(async function() {
+const assets = load({
+	sprites: {
+		lilfang: g.loadSpritesAnim(replaceSeq("/static/lilfang_noeye-?.png", 3)),
+		eye: g.loadSpritesAnim(replaceSeq("/static/lilfang_eye-?.png", 3)),
+		moon: g.loadSpritesAnim(replaceSeq("/static/moon-?.png", 3)),
+	},
+})
 
-	const sprites = {
-		lilfang: await gfx.loadSpritesAnim(nfiles("/static/lilfang_noeye-?.png", 3)),
-		eye: await gfx.loadSpritesAnim(nfiles("/static/lilfang_eye-?.png", 3)),
-		moon: await gfx.loadSpritesAnim(nfiles("/static/moon-?.png", 3)),
-	}
+function drawLilfang(opts: {
+	lookat: Vec2,
+	pos: Vec2,
+	angle?: number,
+}) {
 
-	const lilfangPos = vec2(420, 360)
-	const leftEyeCenter = vec2(31, 19)
-	const rightEyeCenter = vec2(61, 18)
-	const eyeDist = 2
+	// TODO: eye pos when rotating
+	const leftEyeCenter = vec2(-46, -9)
+	const rightEyeCenter = vec2(-16, -10)
+	const eyeDist = 1.5
+	const d1 = opts.lookat.sub(opts.pos.add(leftEyeCenter)).unit().scale(eyeDist)
+	const d2 = opts.lookat.sub(opts.pos.add(rightEyeCenter)).unit().scale(eyeDist)
 
-	app.run(() => {
-
-		const mpos = app.mousePos()
-		const lookat = mpos
-		const d1 = lookat.sub(lilfangPos.add(leftEyeCenter)).unit().scale(eyeDist)
-		const d2 = lookat.sub(lilfangPos.add(rightEyeCenter)).unit().scale(eyeDist)
-
-		gfx.frameStart()
-
-		gfx.pushTransform()
-		gfx.pushTranslate(vec2(360, 240))
-		gfx.drawSprite({ sprite: sprites["moon"], frame: framen(3) })
-		gfx.popTransform()
-
-		gfx.pushTransform()
-		gfx.pushTranslate(lilfangPos)
-		gfx.drawSprite({ sprite: sprites["lilfang"], frame: framen(3), })
-
-		gfx.pushTransform()
-		gfx.pushTranslate(leftEyeCenter.add(d1))
-		gfx.drawSprite({ sprite: sprites["eye"], frame: framen(3) })
-		gfx.popTransform()
-
-		gfx.pushTransform()
-		gfx.pushTranslate(rightEyeCenter.add(d2))
-		gfx.drawSprite({ sprite: sprites["eye"], frame: framen(3) })
-		gfx.popTransform()
-
-		gfx.popTransform()
-
-		gfx.frameEnd()
-
+	g.pushTransform()
+	g.pushTranslate(opts.pos)
+	g.pushRotate(opts.angle ?? 0)
+	g.drawSprite({
+		sprite: assets.sprites["lilfang"],
+		frame: framen(3),
+		anchor: "center",
 	})
 
-})()
+	g.pushTransform()
+	g.pushTranslate(leftEyeCenter.add(d1))
+	g.drawSprite({
+		sprite: assets.sprites["eye"],
+		frame: framen(3),
+		anchor: "center",
+	})
+	g.popTransform()
+
+	g.pushTransform()
+	g.pushTranslate(rightEyeCenter.add(d2))
+	g.drawSprite({
+		sprite: assets.sprites["eye"],
+		frame: framen(3),
+		anchor: "center",
+	})
+	g.popTransform()
+
+	g.popTransform()
+
+}
+
+g.run(() => {
+
+	if (!assets.loaded) {
+		// TODO
+		return
+	}
+
+	const mpos = g.mousePos()
+	const lookat = mpos
+
+	g.pushTransform()
+	g.pushTranslate(vec2(360, 240))
+	g.drawSprite({
+		sprite: assets.sprites["moon"], frame: framen(3),
+		anchor: "center",
+	})
+	g.popTransform()
+
+	g.drawText({
+		text: "[green]oh hi[/green] here's some [wavy]styled[/wavy] text",
+		width: g.width(),
+		size: 32,
+		styles: {
+			"green": {
+				color: rgb(128, 128, 255),
+			},
+			"wavy": (idx, ch) => ({
+				color: hsl2rgb((g.time() * 0.2 + idx * 0.1) % 1, 0.7, 0.8),
+				pos: vec2(0, wave(-4, 4, g.time() * 6 + idx * 0.5)),
+			}),
+		},
+	})
+
+	drawLilfang({
+		lookat: mpos,
+		pos: vec2(420, 360),
+	})
+
+})

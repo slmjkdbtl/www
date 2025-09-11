@@ -22,6 +22,15 @@ export function lerp(a: number, b: number, t: number): number {
 	return a + (b - a) * t
 }
 
+export function wave(
+	lo: number,
+	hi: number,
+	t: number,
+	f = (t: number) => -Math.cos(t)
+): number {
+	return lo + (f(t) + 1) / 2 * (hi - lo)
+}
+
 export function clamp(
 	val: number,
 	min: number,
