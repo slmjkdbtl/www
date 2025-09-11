@@ -1,6 +1,98 @@
-import * as fs from "node:fs/promises"
+export const isDev = typeof Bun === "undefined"
+	? false
+	: Boolean(Bun.env["DEV"])
 
-export const isDev = Boolean(Bun.env["DEV"])
+export class Registry<T> extends Map<number, T> {
+	private lastID: number = 0
+	push(v: T): number {
+		const id = this.lastID
+		this.set(id, v)
+		this.lastID++
+		return id
+	}
+	pushd(v: T): () => void {
+		const id = this.push(v)
+		return () => this.delete(id)
+	}
+}
+
+export class Event<Arg = void> {
+	#handlers: Registry<(arg: Arg) => void> = new Registry()
+	add(action: (arg: Arg) => void): EventController {
+		const cancel = this.#handlers.pushd((arg: Arg) => {
+			if (ev.paused) return
+			action(arg)
+		})
+		const ev = new EventController(cancel)
+		return ev
+	}
+	addOnce(action: (arg: Arg) => void): EventController {
+		const ev = this.add((arg) => {
+			ev.cancel()
+			action(arg)
+		})
+		return ev
+	}
+	next(): Promise<Arg> {
+		return new Promise((res) => this.addOnce(res))
+	}
+	trigger(arg: Arg) {
+		this.#handlers.forEach((action) => action(arg))
+	}
+	numListeners(): number {
+		return this.#handlers.size
+	}
+	clear() {
+		this.#handlers.clear()
+	}
+}
+
+export class EventController {
+	paused: boolean = false
+	readonly cancel: () => void
+	constructor(cancel: () => void) {
+		this.cancel = cancel
+	}
+	static join(events: EventController[]): EventController {
+		const ev = new EventController(() => events.forEach((e) => e.cancel()))
+		Object.defineProperty(ev, "paused", {
+			get: () => events[0].paused,
+			set: (p: boolean) => events.forEach((e) => e.paused = p),
+		})
+		ev.paused = false
+		return ev
+	}
+}
+
+export function deepEq(o1: any, o2: any): boolean {
+	if (o1 === o2) {
+		return true
+	}
+	const t1 = typeof o1
+	const t2 = typeof o2
+	if (t1 !== t2) {
+		return false
+	}
+	if (t1 === "object" && t2 === "object" && o1 !== null && o2 !== null) {
+		if (Array.isArray(o1) !== Array.isArray(o2)) {
+			return false
+		}
+		const k1 = Object.keys(o1)
+		const k2 = Object.keys(o2)
+		if (k1.length !== k2.length) {
+			return false
+		}
+		for (const k of k1) {
+			const v1 = o1[k]
+			const v2 = o2[k]
+			if (!deepEq(v1, v2)) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
 
 export const trydo = overload2(<T>(action: () => T, def: T) => {
 	try {
@@ -11,24 +103,6 @@ export const trydo = overload2(<T>(action: () => T, def: T) => {
 }, <T>(action: () => T) => {
 	return trydo(action, null)
 })
-
-export async function isFile(path: string) {
-	try {
-		const stat = await fs.stat(path)
-		return stat.isFile()
-	} catch {
-		return false
-	}
-}
-
-export async function isDir(path: string) {
-	try {
-		const stat = await fs.stat(path)
-		return stat.isDirectory()
-	} catch {
-		return false
-	}
-}
 
 type Func = (...args: any[]) => any
 
@@ -179,4 +253,34 @@ export function cron(rule: CronRule, action: () => void) {
 			paused = p
 		},
 	}
+}
+
+export function fmtBytes(bytes: number, decimals: number = 2) {
+	if (bytes === 0) return "0b"
+	const k = 1024
+	const dm = decimals < 0 ? 0 : decimals
+	const sizes = ["b", "kb", "mb", "gb", "tb", "pb"]
+	const i = Math.floor(Math.log(bytes) / Math.log(k))
+	const size = parseFloat((bytes / Math.pow(k, i)).toFixed(dm))
+	return `${size}${sizes[i]}`
+}
+
+export async function mapAsync<T, U>(
+	arr: T[],
+	fn: (item: T, index: number, arr: T[]) => Promise<U>
+): Promise<U[]> {
+	return Promise.all(arr.map(fn))
+}
+
+export function isPromise(value: any): value is Promise<any> {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		typeof value.then === "function" &&
+		typeof value.catch === "function"
+	)
+}
+
+export function getErrorMsg(error: unknown) {
+	return (error instanceof Error) ? error.message : String(error)
 }

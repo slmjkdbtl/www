@@ -69,12 +69,6 @@ export function h(
 
 }
 
-export async function dataurl(path: string) {
-	const file = Bun.file(path)
-	const base64 = await fs.readFile(path, { encoding: "base64" })
-	return `data:${file.type};base64,${base64}`
-}
-
 // TODO: better error handling?
 export async function js(p: string) {
 	const file = Bun.file(p)

@@ -20,10 +20,14 @@ import * as sqlite from "bun:sqlite"
 
 import {
 	isDev,
-	isFile,
-	isDir,
+	Registry,
+	Event,
+	EventController,
 	mapValues,
 	ansi,
+	fmtBytes,
+	mapAsync,
+	isPromise,
 } from "./utils"
 
 import type {
@@ -88,20 +92,6 @@ export type Handler = (ctx: ServerCtx) => void | Promise<void>
 export type ErrorHandler = (ctx: ServerCtx, err: Error) => void
 export type NotFoundHandler = (ctx: ServerCtx) => void
 
-export class Registry<T> extends Map<number, T> {
-	private lastID: number = 0
-	push(v: T): number {
-		const id = this.lastID
-		this.set(id, v)
-		this.lastID++
-		return id
-	}
-	pushd(v: T): () => void {
-		const id = this.push(v)
-		return () => this.delete(id)
-	}
-}
-
 export type Server = {
 	use: (handler: Handler) => void,
 	error: (handler: ErrorHandler) => void,
@@ -134,54 +124,6 @@ export type ServerUpgradeOpts<T = undefined> = {
 	data?: T,
 }
 
-export type EventController = {
-	paused: boolean,
-	cancel: () => void
-}
-
-export function createEvent<Args extends any[] = any[]>() {
-
-	const actions = new Registry<(...args: Args) => void>()
-
-	function add(action: (...args: Args) => void): EventController {
-		let paused = false
-		const cancel = actions.pushd((...args: Args) => {
-			if (paused) return
-			action(...args)
-		})
-		return {
-			get paused() {
-				return paused
-			},
-			set paused(p: boolean) {
-				paused = p
-			},
-			cancel: cancel,
-		}
-	}
-	function addOnce(action: (...args: Args) => void): EventController {
-		const ev = add((...args) => {
-			ev.cancel()
-			action(...args)
-		})
-		return ev
-	}
-
-	const next = () => new Promise((res) => addOnce((...args) => res(args)))
-	const trigger = (...args: Args) => actions.forEach((action) => action(...args))
-	const numListeners = () => actions.size
-	const clear = () => actions.clear()
-
-	return {
-		add,
-		addOnce,
-		next,
-		trigger,
-		numListeners,
-		clear,
-	}
-}
-
 export type WebSocketData = {
 	id: string,
 }
@@ -199,26 +141,17 @@ export class HTTPError extends Error {
 	}
 }
 
-const isPromise = (value: any): value is Promise<any> => {
-	return (
-		value !== null &&
-		typeof value === "object" &&
-		typeof value.then === "function" &&
-		typeof value.catch === "function"
-	)
-}
-
 export function createServer(opts: ServerOpts = {}): Server {
 
 	const wsClients = new Map<string, WebSocket>()
 	const wsEvents = {
-		message: createEvent<[WebSocket, string | Buffer]>(),
-		open: createEvent<[WebSocket]>(),
-		close: createEvent<[WebSocket]>(),
+		message: new Event<[WebSocket, string | Buffer]>(),
+		open: new Event<WebSocket>(),
+		close: new Event<WebSocket>(),
 	}
 	const websocket: WebSocketHandler<WebSocketData> = {
 		message: (ws, msg) => {
-			wsEvents.message.trigger(ws, msg)
+			wsEvents.message.trigger([ws, msg])
 		},
 		open: (ws) => {
 			const id = crypto.randomUUID()
@@ -454,7 +387,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 		port: bunServer.port,
 		ws: {
 			clients: wsClients,
-			onMessage: (action) => wsEvents.message.add(action),
+			onMessage: (action) => wsEvents.message.add(([ws, msg]) => action(ws, msg)),
 			onOpen: (action) => wsEvents.open.add(action),
 			onClose: (action) => wsEvents.close.add(action),
 			publish: bunServer.publish.bind(bunServer),
@@ -490,7 +423,7 @@ export function matchPath(pat: string, url: string): Record<string, string> | nu
 
 }
 
-type HTTPMethod =
+export type HTTPMethod =
 	| "GET"
 	| "HEAD"
 	| "POST"
@@ -501,7 +434,7 @@ type HTTPMethod =
 	| "TRACE"
 	| "PATCH"
 
-type Router = {
+export type Router = {
 	add: (method: HTTPMethod | "*", path: string, handler: Handler) => void,
 	mount: (prefix?: string) => Handler,
 }
@@ -555,13 +488,6 @@ export const route = (method: HTTPMethod, path: string, handler: Handler) => {
 
 const trimSlashes = (str: string) => str.replace(/\/*$/, "").replace(/^\/*/, "")
 
-export async function mapAsync<T, U>(
-	arr: T[],
-	fn: (item: T, index: number, arr: T[]) => Promise<U>
-): Promise<U[]> {
-	return Promise.all(arr.map(fn))
-}
-
 export function files(route = "", root = ""): Handler {
 	return ({ req, res, next }) => {
 		route = trimSlashes(route)
@@ -572,6 +498,30 @@ export function files(route = "", root = ""): Handler {
 		const p = path.join(baseDir, relativeURLPath)
 		return res.sendFile(p)
 	}
+}
+
+async function isFile(path: string) {
+	try {
+		const stat = await fs.stat(path)
+		return stat.isFile()
+	} catch {
+		return false
+	}
+}
+
+async function isDir(path: string) {
+	try {
+		const stat = await fs.stat(path)
+		return stat.isDirectory()
+	} catch {
+		return false
+	}
+}
+
+export async function dataurl(path: string) {
+	const file = Bun.file(path)
+	const base64 = await fs.readFile(path, { encoding: "base64" })
+	return `data:${file.type};base64,${base64}`
 }
 
 export function filebrowser(route = "", root = ""): Handler {
@@ -900,17 +850,6 @@ export type LoggerOpts = {
 	stdout?: boolean,
 	stderr?: boolean,
 }
-
-export function fmtBytes(bytes: number, decimals: number = 2) {
-	if (bytes === 0) return "0b"
-	const k = 1024
-	const dm = decimals < 0 ? 0 : decimals
-	const sizes = ["b", "kb", "mb", "gb", "tb", "pb"]
-	const i = Math.floor(Math.log(bytes) / Math.log(k))
-	const size = parseFloat((bytes / Math.pow(k, i)).toFixed(dm))
-	return `${size}${sizes[i]}`
-}
-
 
 // TODO: is there a way to get bun calculated Content-Length result?
 // TODO: ReadableStream?

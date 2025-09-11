@@ -191,6 +191,8 @@ server.use(rateLimiter({
 	},
 }))
 
+server.use(files("/static", "static"))
+
 server.use(route("GET", "/", async ({ req, res }) => {
 	const user = getSession(req)?.user
 	const posts = postTable.select<any>({

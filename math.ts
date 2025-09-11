@@ -1,4 +1,7 @@
-export type Vec2Args = [number, number] | [number] | [Vec2] | [number | Vec2] | []
+import {
+	overload3,
+} from "./utils"
+
 export type Point = Vec2
 export type ShapeType = Point | Circle | Line | Rect | Polygon
 export type RaycastHit = {
@@ -17,6 +20,37 @@ export function rad2deg(rad: number): number {
 
 export function lerp(a: number, b: number, t: number): number {
 	return a + (b - a) * t
+}
+
+export function clamp(
+	val: number,
+	min: number,
+	max: number,
+): number {
+	if (min > max) {
+		return clamp(val, max, min)
+	}
+	return Math.min(Math.max(val, min), max)
+}
+
+export function map(
+	v: number,
+	l1: number,
+	h1: number,
+	l2: number,
+	h2: number,
+): number {
+	return l2 + (v - l1) / (h1 - l1) * (h2 - l2)
+}
+
+export function mapc(
+	v: number,
+	l1: number,
+	h1: number,
+	l2: number,
+	h2: number,
+): number {
+	return clamp(map(v, l1, h1, l2, h2), l2, h2)
 }
 
 export class Mat4 {
@@ -123,7 +157,6 @@ export class Mat4 {
 		return this
 	}
 
-	// TODO: in-place variant
 	mult(other: Mat4): Mat4 {
 		const out = []
 		for (let i = 0; i < 4; i++) {
@@ -259,6 +292,20 @@ export class Mat4 {
 
 }
 
+export type Vec2Args =
+	| []
+	| [number]
+	| [Vec2]
+	| [[number, number]]
+	| [number, number]
+
+export type ColorArgs =
+	| []
+	| [number]
+	| [Color]
+	| [[number, number, number]]
+	| [number, number, number]
+
 export class Vec2 {
 	x: number = 0
 	y: number = 0
@@ -277,25 +324,21 @@ export class Vec2 {
 	clone(): Vec2 {
 		return new Vec2(this.x, this.y)
 	}
-	add(...args: Vec2Args): Vec2 {
-		const p2 = vec2(...args)
-		return new Vec2(this.x + p2.x, this.y + p2.y)
+	add(p: Vec2): Vec2 {
+		return new Vec2(this.x + p.x, this.y + p.y)
 	}
-	sub(...args: Vec2Args): Vec2 {
-		const p2 = vec2(...args)
-		return new Vec2(this.x - p2.x, this.y - p2.y)
+	sub(p: Vec2): Vec2 {
+		return new Vec2(this.x - p.x, this.y - p.y)
 	}
-	scale(...args: Vec2Args): Vec2 {
-		const s = vec2(...args)
+	scale(s: Vec2 | number): Vec2 {
+		if (typeof s === "number") return this.scale(new Vec2(s))
 		return new Vec2(this.x * s.x, this.y * s.y)
 	}
-	dist(...args: Vec2Args): number {
-		const p2 = vec2(...args)
-		return this.sub(p2).len()
+	dist(p: Vec2): number {
+		return this.sub(p).len()
 	}
-	sdist(...args: Vec2Args): number {
-		const p2 = vec2(...args)
-		return this.sub(p2).slen()
+	sdist(p: Vec2): number {
+		return this.sub(p).slen()
 	}
 	len(): number {
 		return Math.sqrt(this.dot(this))
@@ -325,13 +368,11 @@ export class Vec2 {
 	cross(p2: Vec2): number {
 		return this.x * p2.y - this.y * p2.x
 	}
-	angle(...args: Vec2Args): number {
-		const p2 = vec2(...args)
-		return rad2deg(Math.atan2(this.y - p2.y, this.x - p2.x))
+	angle(p: Vec2): number {
+		return rad2deg(Math.atan2(this.y - p.y, this.x - p.x))
 	}
-	angleBetween(...args: Vec2Args): number {
-		const p2 = vec2(...args)
-		return rad2deg(Math.atan2(this.cross(p2), this.dot(p2)))
+	angleBetween(p: Vec2): number {
+		return rad2deg(Math.atan2(this.cross(p), this.dot(p)))
 	}
 	lerp(dest: Vec2, t: number): Vec2 {
 		return new Vec2(lerp(this.x, dest.x, t), lerp(this.y, dest.y, t))
@@ -365,17 +406,184 @@ export class Vec2 {
 	}
 }
 
-export function vec2(...args: Vec2Args): Vec2 {
-	if (args.length === 1) {
-		if (args[0] instanceof Vec2) {
-			return new Vec2(args[0].x, args[0].y)
-		} else if (Array.isArray(args[0]) && args[0].length === 2) {
-			return new Vec2(...args[0])
+export const vec2 = overload3(() => {
+	return new Vec2(0, 0)
+}, (p: number | [number, number] | Vec2) => {
+	if (typeof p === "number") {
+		return new Vec2(p, p)
+	} else if (Array.isArray(p) && p.length === 2) {
+		return new Vec2(p[0], p[1])
+	} else if (p instanceof Vec2) {
+		return p.clone()
+	} else {
+		throw new Error("incorrect arguments to vec2()")
+	}
+}, (x: number, y: number) => {
+	return new Vec2(x, y)
+})
+
+export class Color {
+
+	r: number = 255
+	g: number = 255
+	b: number = 255
+
+	constructor(r: number, g: number, b: number) {
+		this.r = clamp(r, 0, 255)
+		this.g = clamp(g, 0, 255)
+		this.b = clamp(b, 0, 255)
+	}
+
+	static fromArray(arr: number[]) {
+		return new Color(arr[0], arr[1], arr[2])
+	}
+
+	static fromHex(hex: string | number) {
+		if (typeof hex === "number") {
+			return new Color(
+				(hex >> 16) & 0xff,
+				(hex >> 8) & 0xff,
+				(hex >> 0) & 0xff,
+			)
+		} else if (typeof hex === "string") {
+			const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+			if (!result) {
+				throw new Error("failed to parse hex color")
+			}
+			return new Color(
+				parseInt(result[1], 16),
+				parseInt(result[2], 16),
+				parseInt(result[3], 16),
+			)
+		} else {
+			throw new Error("Invalid hex color format")
 		}
 	}
-	// @ts-ignore
-	return new Vec2(...args)
+
+	// TODO: use range of [0, 360] [0, 100] [0, 100]?
+	static fromHSL(h: number, s: number, l: number) {
+
+		if (s == 0) {
+			return new Color(255 * l, 255 * l, 255 * l)
+		}
+
+		const hue2rgb = (p: number, q: number, t: number) => {
+			if (t < 0) t += 1
+			if (t > 1) t -= 1
+			if (t < 1 / 6) return p + (q - p) * 6 * t
+			if (t < 1 / 2) return q
+			if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+			return p
+		}
+
+		const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+		const p = 2 * l - q
+		const r = hue2rgb(p, q, h + 1 / 3)
+		const g = hue2rgb(p, q, h)
+		const b = hue2rgb(p, q, h - 1 / 3)
+
+		return new Color(Math.round(r * 255), Math.round(g * 255), Math.round(b * 255))
+
+	}
+
+	static RED = new Color(255, 0, 0)
+	static GREEN = new Color(0, 255, 0)
+	static BLUE = new Color(0, 0, 255)
+	static YELLOW = new Color(255, 255, 0)
+	static MAGENTA = new Color(255, 0, 255)
+	static CYAN = new Color(0, 255, 255)
+	static WHITE = new Color(255, 255, 255)
+	static BLACK = new Color(0, 0, 0)
+
+	clone(): Color {
+		return new Color(this.r, this.g, this.b)
+	}
+
+	lighten(a: number): Color {
+		return new Color(this.r + a, this.g + a, this.b + a)
+	}
+
+	darken(a: number): Color {
+		return this.lighten(-a)
+	}
+
+	invert(): Color {
+		return new Color(255 - this.r, 255 - this.g, 255 - this.b)
+	}
+
+	mult(other: Color): Color {
+		return new Color(
+			this.r * other.r / 255,
+			this.g * other.g / 255,
+			this.b * other.b / 255,
+		)
+	}
+
+	lerp(dest: Color, t: number): Color {
+		return new Color(
+			lerp(this.r, dest.r, t),
+			lerp(this.g, dest.g, t),
+			lerp(this.b, dest.b, t),
+		)
+	}
+
+	toHSL(): [number, number, number] {
+		const r = this.r / 255
+		const g = this.g / 255
+		const b = this.b / 255
+		const max = Math.max(r, g, b), min = Math.min(r, g, b)
+		let h = (max + min) / 2
+		let s = h
+		const l = h
+		if (max == min) {
+			h = s = 0
+		} else {
+			const d = max - min
+			s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+			switch (max) {
+				case r: h = (g - b) / d + (g < b ? 6 : 0); break
+				case g: h = (b - r) / d + 2; break
+				case b: h = (r - g) / d + 4; break
+			}
+			h /= 6
+		}
+		return [h, s, l]
+	}
+
+	eq(other: Color): boolean {
+		return this.r === other.r
+			&& this.g === other.g
+			&& this.b === other.b
+
+	}
+
+	toString(): string {
+		return `rgb(${this.r}, ${this.g}, ${this.b})`
+	}
+
+	toHex(): string {
+		return "#" + ((1 << 24) + (this.r << 16) + (this.g << 8) + this.b).toString(16).slice(1)
+	}
+
 }
+
+export const rgb = overload3(() => {
+	return new Color(255, 255, 255)
+}, (v: number | string | Color | [number, number, number]) => {
+	if (typeof v === "string" || typeof v === "number") {
+		return Color.fromHex(v)
+	} else if (v instanceof Color) {
+		return v.clone()
+	} else if (Array.isArray(v) && v.length === 3) {
+		return Color.fromArray(v)
+	} else {
+		throw new Error("incorrect arguments to rgb()")
+	}
+}, (r: number, g: number, b: number) => {
+	return new Color(r, g, b)
+})
+
+export const hsl2rgb = (h: number, s: number, l: number) => Color.fromHSL(h, s, l)
 
 export class Line {
 	p1: Vec2
@@ -407,6 +615,42 @@ export class Line {
 	}
 }
 
+export class Quad {
+	x: number = 0
+	y: number = 0
+	w: number = 1
+	h: number = 1
+	constructor(x: number, y: number, w: number, h: number) {
+		this.x = x
+		this.y = y
+		this.w = w
+		this.h = h
+	}
+	scale(other: Quad): Quad {
+		return new Quad(
+			this.x + this.w * other.x,
+			this.y + this.h * other.y,
+			this.w * other.w,
+			this.h * other.h,
+		)
+	}
+	pos() {
+		return new Vec2(this.x, this.y)
+	}
+	clone(): Quad {
+		return new Quad(this.x, this.y, this.w, this.h)
+	}
+	eq(other: Quad): boolean {
+		return this.x === other.x
+			&& this.y === other.y
+			&& this.w === other.w
+			&& this.h === other.h
+	}
+	toString(): string {
+		return `quad(${this.x}, ${this.y}, ${this.w}, ${this.h})`
+	}
+}
+
 export class Rect {
 	pos: Vec2
 	width: number
@@ -425,9 +669,9 @@ export class Rect {
 	points(): [Vec2, Vec2, Vec2, Vec2] {
 		return [
 			this.pos,
-			this.pos.add(this.width, 0),
-			this.pos.add(this.width, this.height),
-			this.pos.add(0, this.height),
+			this.pos.add(new Vec2(this.width, 0)),
+			this.pos.add(new Vec2(this.width, this.height)),
+			this.pos.add(new Vec2(0, this.height)),
 		]
 	}
 	transform(m: Mat4): Polygon {
@@ -447,7 +691,7 @@ export class Rect {
 	}
 	sdistToPoint(p: Vec2): number {
 		const min = this.pos
-		const max = this.pos.add(this.width, this.height)
+		const max = this.pos.add(new Vec2(this.width, this.height))
 		const dx = Math.max(min.x - p.x, 0, p.x - max.x)
 		const dy = Math.max(min.y - p.y, 0, p.y - max.y)
 		return dx * dx + dy * dy
