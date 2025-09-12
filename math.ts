@@ -82,6 +82,14 @@ export function mapc(
 	return clamp(map(v, l1, h1, l2, h2), l2, h2)
 }
 
+export const rand = overload3(() => {
+	return Math.random()
+}, (n: number) => {
+	return Math.random() * n
+}, (a: number, b: number) => {
+	return a + Math.random() * (b - a)
+})
+
 // basic ANSI C LCG
 const A = 1103515245
 const C = 12345

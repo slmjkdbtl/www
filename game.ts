@@ -359,7 +359,7 @@ export interface LoadSpritesAnimOpt {
 	anims?: SpriteAnims,
 }
 
-export type SpriteAnim = number | {
+export type SpriteAnim = {
 	from: number,
 	to: number,
 	loop?: boolean,
@@ -376,6 +376,20 @@ export function loadImg(src: string): Promise<HTMLImageElement> {
 	return new Promise<HTMLImageElement>((resolve, reject) => {
 		img.onload = () => resolve(img)
 		img.onerror = (e) => reject(e)
+	})
+}
+
+export function loadAudio(src: string): Promise<HTMLAudioElement> {
+	const audio = new Audio()
+	audio.crossOrigin = "anonymous"
+	audio.src = src
+	return new Promise<HTMLAudioElement>((resolve, reject) => {
+		audio.addEventListener("canplaythrough", () => {
+			resolve(audio)
+		})
+		audio.addEventListener("error", (e) => {
+			reject(e)
+		})
 	})
 }
 
@@ -1329,27 +1343,60 @@ export async function loadMap<T>(entries: Record<string, Promise<T>>): Promise<R
 
 export type AssetsEntries = {
 	sprites: Record<string, Promise<Sprite>>,
+	audio: Record<string, Promise<HTMLAudioElement>>,
 }
 
 export type Assets = {
-	loaded: boolean,
+	ready: boolean,
 	sprites: Record<string, Sprite>,
+	audio: Record<string, HTMLAudioElement>,
+	onReady: (action: () => void) => void,
+	then: (action: () => void) => void,
 }
 
 // TODO: progress
 export function loadAssets(entries: AssetsEntries): Assets {
+
+	const onReadyEvents: Array<() => void> = []
 	let spritesLoaded = false
-	let sprites = {}
+	let audioLoaded = false
+	let sprites: Record<string, Sprite> = {}
+	let audio: Record<string, HTMLAudioElement> = {}
+
+	function isReady() {
+		return spritesLoaded && audioLoaded
+	}
+
+	function onReady(action: () => void) {
+		onReadyEvents.push(action)
+	}
+
 	loadMap<Sprite>(entries.sprites).then((s) => {
 		spritesLoaded = true
 		Object.assign(sprites, s)
+		if (isReady()) {
+			onReadyEvents.forEach((action) => action())
+		}
 	})
+
+	loadMap<HTMLAudioElement>(entries.audio).then((s) => {
+		audioLoaded = true
+		Object.assign(audio, s)
+		if (isReady()) {
+			onReadyEvents.forEach((action) => action())
+		}
+	})
+
 	return {
-		get loaded() {
-			return spritesLoaded
+		get ready() {
+			return isReady()
 		},
 		sprites: sprites,
+		audio: audio,
+		onReady: onReady,
+		then: onReady,
 	}
+
 }
 
 export type CreateGameOpts = {

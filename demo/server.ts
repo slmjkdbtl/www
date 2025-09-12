@@ -598,11 +598,12 @@ server.use(route("GET", "/err2", async () => {
 	throw new Error("yep")
 }))
 
-server.error(({ res }, err) => {
-	res.status = 500
-	console.error(err)
-	res.sendText(`internal server error`)
-})
+// TODO: this overrides 404
+// server.error(({ res }, err) => {
+	// res.status = 500
+	// console.error(err)
+	// res.sendText(`internal server error`)
+// })
 
 server.notFound(({ res }) => {
 	res.status = 404
