@@ -644,7 +644,7 @@ export const rgb = overload3(() => {
 	return new Color(r, g, b)
 })
 
-export const hsl2rgb = (h: number, s: number, l: number) => Color.fromHSL(h, s, l)
+export const hsl = (h: number, s: number, l: number) => Color.fromHSL(h, s, l)
 
 export class Line {
 	p1: Vec2

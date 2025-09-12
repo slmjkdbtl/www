@@ -9,6 +9,7 @@ import {
 	Mat4,
 	Color,
 	Quad,
+	LerpValue,
 	map,
 	deg2rad,
 	rad2deg,
@@ -462,55 +463,18 @@ export type DrawSpriteOpt = RenderProps & {
 }
 
 export type DrawRectOpt = RenderProps & {
-	/**
-	 * Width of the rectangle.
-	 */
 	width: number,
-	/**
-	 * Height of the rectangle.
-	 */
 	height: number,
-	/**
-	 * Use gradient instead of solid color.
-	 *
-	 * @since v3000.0
-	 */
 	gradient?: [Color, Color],
-	/**
-	 * If the gradient should be horizontal.
-	 *
-	 * @since v3000.0
-	 */
 	horizontal?: boolean,
-	/**
-	 * If fill the shape with color (set this to false if you only want an outline).
-	 */
 	fill?: boolean,
-	/**
-	 * The radius of each corner.
-	 */
 	radius?: number,
-	/**
-	 * The anchor point, or the pivot point. Default to "topleft".
-	 */
 	anchor?: Anchor | Vec2,
 }
 
-/**
- * How the line should look like.
- */
 export type DrawLineOpt = Omit<RenderProps, "angle" | "scale"> & {
-	/**
-	 * Starting point of the line.
-	 */
 	p1: Vec2,
-	/**
-	 * Ending point of the line.
-	 */
 	p2: Vec2,
-	/**
-	 * The width, or thickness of the line,
-	 */
 	width?: number,
 }
 
@@ -520,189 +484,60 @@ export type LineJoin =
 	| "bevel"
 	| "miter"
 
-/**
- * How the lines should look like.
- */
 export type DrawLinesOpt = Omit<RenderProps, "angle" | "scale"> & {
-	/**
-	 * The points that should be connected with a line.
-	 */
 	pts: Vec2[],
-	/**
-	 * The width, or thickness of the lines,
-	 */
 	width?: number,
-	/**
-	 * The radius of each corner.
-	 */
 	radius?: number,
-	/**
-	 * Line join style (default "none").
-	 */
 	join?: LineJoin,
 }
 
 export type DrawCurveOpt = RenderProps & {
-	/**
-	 * The amount of line segments to draw.
-	 */
 	segments?: number
-	/**
-	 * The width of the line.
-	 */
 	width?: number
 }
 
 export type DrawBezierOpt = DrawCurveOpt & {
-	/**
-	 * The first point.
-	 */
 	pt1: Vec2,
-	/**
-	 * The the first control point.
-	 */
 	pt2: Vec2,
-	/**
-	 * The the second control point.
-	 */
 	pt3: Vec2,
-	/**
-	 * The second point.
-	 */
 	pt4: Vec2,
 }
 
-/**
- * How the triangle should look like.
- */
 export type DrawTriangleOpt = RenderProps & {
-	/**
-	 * First point of triangle.
-	 */
 	p1: Vec2,
-	/**
-	 * Second point of triangle.
-	 */
 	p2: Vec2,
-	/**
-	 * Third point of triangle.
-	 */
 	p3: Vec2,
-	/**
-	 * If fill the shape with color (set this to false if you only want an outline).
-	 */
 	fill?: boolean,
-	/**
-	 * The radius of each corner.
-	 */
 	radius?: number,
 }
 
-/**
- * How the circle should look like.
- */
 export type DrawCircleOpt = Omit<RenderProps, "angle"> & {
-	/**
-	 * Radius of the circle.
-	 */
 	radius: number,
-	/**
-	 * Starting angle.
-	 */
 	start?: number,
-	/**
-	 * Ending angle.
-	 */
 	end?: number,
-	/**
-	 * If fill the shape with color (set this to false if you only want an outline).
-	 */
 	fill?: boolean,
-	/**
-	 * Use gradient instead of solid color.
-	 *
-	 * @since v3000.0
-	 */
 	gradient?: [Color, Color],
-	/**
-	 * Multiplier for circle vertices resolution (default 1)
-	 */
 	resolution?: number,
-	/**
-	 * The anchor point, or the pivot point. Default to "topleft".
-	 */
 	anchor?: Anchor | Vec2,
 }
 
-/**
- * How the ellipse should look like.
- */
 export type DrawEllipseOpt = RenderProps & {
-	/**
-	 * The horizontal radius.
-	 */
 	radiusX: number,
-	/**
-	 * The vertical radius.
-	 */
 	radiusY: number,
-	/**
-	 * Starting angle.
-	 */
 	start?: number,
-	/**
-	 * Ending angle.
-	 */
 	end?: number,
-	/**
-	 * If fill the shape with color (set this to false if you only want an outline).
-	 */
 	fill?: boolean,
-	/**
-	 * Use gradient instead of solid color.
-	 *
-	 * @since v3000.0
-	 */
 	gradient?: [Color, Color],
-	/**
-	 * Multiplier for circle vertices resolution (default 1)
-	 */
 	resolution?: number,
-	/**
-	 * The anchor point, or the pivot point. Default to "topleft".
-	 */
 	anchor?: Anchor | Vec2,
 }
 
-/**
- * How the polygon should look like.
- */
 export type DrawPolygonOpt = RenderProps & {
-	/**
-	 * The points that make up the polygon
-	 */
 	pts: Vec2[],
-	/**
-	 * If fill the shape with color (set this to false if you only want an outline).
-	 */
 	fill?: boolean,
-	/**
-	 * Manual triangulation.
-	 */
 	indices?: number[],
-	/**
-	 * The center point of transformation in relation to the position.
-	 */
 	offset?: Vec2,
-	/**
-	 * The radius of each corner.
-	 */
 	radius?: number,
-	/**
-	 * The color of each vertice.
-	 *
-	 * @since v3000.0
-	 */
 	colors?: Color[],
 }
 
@@ -1501,6 +1336,7 @@ export type Assets = {
 	sprites: Record<string, Sprite>,
 }
 
+// TODO: progress
 export function loadAssets(entries: AssetsEntries): Assets {
 	let spritesLoaded = false
 	let sprites = {}
@@ -1525,6 +1361,17 @@ export type CreateGameOpts = {
 	crisp?: boolean,
 	pixelDensity?: number,
 	background?: [number, number, number] | [number, number, number, number],
+}
+
+export type GameCtx = ReturnType<typeof createGame>
+
+// TODO: use this
+export class GameError extends Error {
+	ctx: GameCtx
+	constructor(ctx: GameCtx, msg: string) {
+		super(msg)
+		this.ctx = ctx
+	}
 }
 
 export function createGame(gopt: CreateGameOpts = {}) {
@@ -1685,7 +1532,7 @@ export function createGame(gopt: CreateGameOpts = {}) {
 
 	let timers: Timer[] = []
 
-	function tween2(...args: Parameters<typeof tween>) {
+	function tween2<T extends LerpValue>(...args: Parameters<typeof tween<T>>) {
 		let t = tween(...args)
 		timers.push(t)
 		return t
@@ -3480,10 +3327,12 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		onShow,
 		events: app.events,
 
-		width,
-		height,
 		loadSprite,
 		loadSpritesAnim,
+		createShader,
+
+		width,
+		height,
 		drawSprite,
 		drawRect,
 		drawCircle,
