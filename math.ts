@@ -4,11 +4,6 @@ import {
 
 export type Point = Vec2
 export type ShapeType = Point | Circle | Line | Rect | Polygon
-export type RaycastHit = {
-	fraction: number
-	normal: Vec2
-	point: Vec2
-}
 
 export function deg2rad(deg: number): number {
 	return deg * Math.PI / 180
@@ -20,6 +15,31 @@ export function rad2deg(rad: number): number {
 
 export function lerp(a: number, b: number, t: number): number {
 	return a + (b - a) * t
+}
+
+export type LerpValue =
+	number
+	| Vec2
+	| Color
+
+export type RNGValue =
+	number
+	| Vec2
+	| Color
+
+export function lerpEx<V extends LerpValue>(
+	a: V,
+	b: V,
+	t: number,
+): V {
+	if (typeof a === "number" && typeof b === "number") {
+		return a + (b - a) * t as V
+	} else if (a instanceof Vec2 && b instanceof Vec2) {
+		return a.lerp(b, t) as V
+	} else if (a instanceof Color && b instanceof Color) {
+		return a.lerp(b, t) as V
+	}
+	throw new Error("lerpEx supports number, Vec2 and Color")
 }
 
 export function wave(
@@ -60,6 +80,38 @@ export function mapc(
 	h2: number,
 ): number {
 	return clamp(map(v, l1, h1, l2, h2), l2, h2)
+}
+
+// basic ANSI C LCG
+const A = 1103515245
+const C = 12345
+const M = 2147483648
+
+export class RNG {
+	seed: number
+	constructor(seed: number) {
+		this.seed = seed
+	}
+	gen(): number {
+		this.seed = (A * this.seed + C) % M
+		return this.seed / M
+	}
+	genNumber(a: number, b: number): number {
+		return a + this.gen() * (b - a)
+	}
+	genVec2(a: Vec2, b: Vec2): Vec2 {
+		return new Vec2(
+			this.genNumber(a.x, b.x),
+			this.genNumber(a.y, b.y),
+		)
+	}
+	genColor(a: Color, b: Color): Color {
+		return new Color(
+			this.genNumber(a.r, b.r),
+			this.genNumber(a.g, b.g),
+			this.genNumber(a.b, b.b),
+		)
+	}
 }
 
 export class Mat4 {
@@ -619,9 +671,6 @@ export class Line {
 	contains(point: Vec2): boolean {
 		return this.collides(point)
 	}
-	raycast(origin: Vec2, direction: Vec2): RaycastHit | null {
-		return raycastLine(origin, direction, this)
-	}
 }
 
 export class Quad {
@@ -711,9 +760,6 @@ export class Rect {
 	contains(point: Vec2): boolean {
 		return this.collides(point)
 	}
-	raycast(origin: Vec2, direction: Vec2): RaycastHit | null {
-		return raycastRect(origin, direction, this)
-	}
 }
 
 export class Circle {
@@ -740,9 +786,6 @@ export class Circle {
 	}
 	contains(point: Vec2): boolean {
 		return this.collides(point)
-	}
-	raycast(origin: Vec2, direction: Vec2): RaycastHit | null {
-		return raycastCircle(origin, direction, this)
 	}
 }
 
@@ -787,9 +830,6 @@ export class Polygon {
 	}
 	contains(point: Vec2): boolean {
 		return this.collides(point)
-	}
-	raycast(origin: Vec2, direction: Vec2): RaycastHit | null {
-		return raycastPolygon(origin, direction, this)
 	}
 }
 
@@ -960,13 +1000,9 @@ export function testLineCircle(l: Line, circle: Circle): boolean {
 }
 
 export function testLinePolygon(l: Line, p: Polygon): boolean {
-
-	// test if line is inside
 	if (testPolygonPoint(p, l.p1) || testPolygonPoint(p, l.p2)) {
 		return true
 	}
-
-	// test each line
 	for (let i = 0; i < p.pts.length; i++) {
 		const p1 = p.pts[i]
 		const p2 = p.pts[(i + 1) % p.pts.length]
@@ -974,9 +1010,7 @@ export function testLinePolygon(l: Line, p: Polygon): boolean {
 			return true
 		}
 	}
-
 	return false
-
 }
 
 export function testCirclePoint(c: Circle, p: Point): boolean {
@@ -1137,147 +1171,6 @@ export function testShapeShape(shape1: ShapeType, shape2: ShapeType): boolean {
 	}
 }
 
-function raycastLine(origin: Vec2, direction: Vec2, line: Line): RaycastHit | null {
-	const a = origin
-	const c = line.p1
-	const d = line.p2
-	const ab = direction
-	const cd = d.sub(c)
-	const abxcd = ab.cross(cd)
-	// If parallel, no intersection
-	if (Math.abs(abxcd) < Number.EPSILON) {
-		return null
-	}
-	const ac = c.sub(a)
-	const s = ac.cross(cd) / abxcd
-	// Outside the ray
-	if (s <= 0 || s >= 1) {
-		return null
-	}
-	// Outside the line
-	const t = ac.cross(ab) / abxcd
-	if (t <= 0 || t >= 1) {
-		return null
-	}
-
-	const normal = cd.normal().unit()
-	if (direction.dot(normal) > 0) {
-		normal.x *= -1
-		normal.y *= -1
-	}
-
-	return {
-		point: a.add(ab.scale(s)),
-		normal: normal,
-		fraction: s,
-	}
-}
-
-function raycastRect(origin: Vec2, direction: Vec2, rect: Rect) {
-	let tmin = Number.NEGATIVE_INFINITY, tmax = Number.POSITIVE_INFINITY
-	let normal
-
-	if (origin.x != 0.0) {
-		const tx1 = (rect.pos.x - origin.x) / direction.x
-		const tx2 = (rect.pos.x + rect.width - origin.x) / direction.x
-
-		normal = vec2(-Math.sign(direction.x), 0)
-
-		tmin = Math.max(tmin, Math.min(tx1, tx2))
-		tmax = Math.min(tmax, Math.max(tx1, tx2))
-	}
-
-	if (origin.y != 0.0) {
-		const ty1 = (rect.pos.y - origin.y) / direction.y
-		const ty2 = (rect.pos.y + rect.height - origin.y) / direction.y
-
-		if (Math.min(ty1, ty2) > tmin) {
-			normal = vec2(0, -Math.sign(direction.y))
-		}
-
-		tmin = Math.max(tmin, Math.min(ty1, ty2))
-		tmax = Math.min(tmax, Math.max(ty1, ty2))
-	}
-
-	if (tmax >= tmin && tmin >= 0 && tmin <= 1) {
-		const point = origin.add(direction.scale(tmin))
-		return {
-			point: point,
-			normal: normal,
-			fraction: tmin,
-		}
-	} else {
-		return null
-	}
-}
-
-function raycastCircle(origin: Vec2, direction: Vec2, circle: Circle): RaycastHit | null {
-	const a = origin
-	const c = circle.center
-	const ab = direction
-	const A = ab.dot(ab)
-	const centerToOrigin = a.sub(c)
-	const B = 2 * ab.dot(centerToOrigin)
-	const C = centerToOrigin.dot(centerToOrigin) - circle.radius * circle.radius
-	// Calculate the discriminant of ax^2 + bx + c
-	const disc = B * B - 4 * A * C
-	// No root
-	if ((A <= Number.EPSILON) || (disc < 0)) {
-		return null
-	}
-	// One possible root
-	else if (disc == 0) {
-		const t = -B / (2 * A)
-		if (t >= 0 && t <= 1) {
-			const point = a.add(ab.scale(t))
-			return {
-				point: point,
-				normal: point.sub(c),
-				fraction: t,
-			}
-		}
-	}
-	// Two possible roots
-	else {
-		const t1 = (-B + Math.sqrt(disc)) / (2 * A)
-		const t2 = (-B - Math.sqrt(disc)) / (2 * A)
-		let t = null
-		if (t1 >= 0 && t1 <= 1) {
-			t = t1
-		}
-		if (t2 >= 0 && t2 <= 1) {
-			t = Math.min(t2, t ?? t2)
-		}
-		if (t != null) {
-			const point = a.add(ab.scale(t))
-			return {
-				point: point,
-				normal: point.sub(c).unit(),
-				fraction: t,
-			}
-		}
-	}
-
-	return null
-}
-
-function raycastPolygon(origin: Vec2, direction: Vec2, polygon: Polygon): RaycastHit | null {
-	const points = polygon.pts
-	let minHit = null
-
-	let prev = points[points.length - 1]
-	for (let i = 0; i < points.length; i++) {
-		const cur = points[i]
-		const hit = raycastLine(origin, direction, new Line(prev, cur))
-		if (hit && (!minHit || minHit.fraction > hit.fraction)) {
-			minHit = hit
-		}
-		prev = cur
-	}
-
-	return minHit
-}
-
 export function sat(p1: Polygon, p2: Polygon): Vec2 | null {
 	let overlap = Number.MAX_VALUE
 	let displacement = vec2(0)
@@ -1313,4 +1206,196 @@ export function sat(p1: Polygon, p2: Polygon): Vec2 | null {
 		}
 	}
 	return displacement
+}
+
+// https://easings.net/
+const c1 = 1.70158
+const c2 = c1 * 1.525
+const c3 = c1 + 1
+const c4 = (2 * Math.PI) / 3
+const c5 = (2 * Math.PI) / 4.5
+
+export type EaseFunc = (x: number) => number
+
+export const easings = {
+	linear: (x: number) => x,
+	easeInSine: (x: number) => 1 - Math.cos((x * Math.PI) / 2),
+	easeOutSine: (x: number) => Math.sin((x * Math.PI) / 2),
+	easeInOutSine: (x: number) => -(Math.cos(Math.PI * x) - 1) / 2,
+	easeInQuad: (x: number) => x * x,
+	easeOutQuad: (x: number) => 1 - (1 - x) * (1 - x),
+	easeInOutQuad: (x: number) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2,
+	easeInCubic: (x: number) => x * x * x,
+	easeOutCubic: (x: number) => 1 - Math.pow(1 - x, 3),
+	easeInOutCubic: (x: number) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+	easeInQuart: (x: number) => x * x * x * x,
+	easeOutQuart: (x: number) => 1 - Math.pow(1 - x, 4),
+	easeInOutQuart: (x: number) => x < 0.5 ? 8 * x * x * x * x : 1 - Math.pow(-2 * x + 2, 4) / 2,
+	easeInQuint: (x: number) => x * x * x * x * x,
+	easeOutQuint: (x: number) => 1 - Math.pow(1 - x, 5),
+	easeInOutQuint: (x: number) => x < 0.5 ? 16 * x * x * x * x * x : 1 - Math.pow(-2 * x + 2, 5) / 2,
+	easeInExpo: (x: number) => x === 0 ? 0 : Math.pow(2, 10 * x - 10),
+	easeOutExpo: (x: number) => x === 1 ? 1 : 1 - Math.pow(2, -10 * x),
+	easeInOutExpo: (x: number) => {
+		return x === 0
+			? 0
+			: x === 1
+				? 1
+				: x < 0.5
+					? Math.pow(2, 20 * x - 10) / 2
+					: (2 - Math.pow(2, -20 * x + 10)) / 2
+	},
+	easeInCirc: (x: number) => 1 - Math.sqrt(1 - Math.pow(x, 2)),
+	easeOutCirc: (x: number) => Math.sqrt(1 - Math.pow(x - 1, 2)),
+	easeInOutCirc: (x: number) => {
+		return x < 0.5
+			? (1 - Math.sqrt(1 - Math.pow(2 * x, 2))) / 2
+			: (Math.sqrt(1 - Math.pow(-2 * x + 2, 2)) + 1) / 2
+	},
+	easeInBack: (x: number) => c3 * x * x * x - c1 * x * x,
+	easeOutBack: (x: number) => 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2),
+	easeInOutBack: (x: number) => {
+		return x < 0.5
+			? (Math.pow(2 * x, 2) * ((c2 + 1) * 2 * x - c2)) / 2
+			: (Math.pow(2 * x - 2, 2) * ((c2 + 1) * (x * 2 - 2) + c2) + 2) / 2
+	},
+	easeInElastic: (x: number) => {
+		return x === 0
+			? 0
+			: x === 1
+				? 1
+				: -Math.pow(2, 10 * x - 10) * Math.sin((x * 10 - 10.75) * c4)
+	},
+	easeOutElastic: (x: number) => {
+		return x === 0
+			? 0
+			: x === 1
+				? 1
+				: Math.pow(2, -10 * x) * Math.sin((x * 10 - 0.75) * c4) + 1
+	},
+	easeInOutElastic: (x: number) => {
+		return x === 0
+			? 0
+			: x === 1
+				? 1
+				: x < 0.5
+					? -(Math.pow(2, 20 * x - 10) * Math.sin((20 * x - 11.125) * c5)) / 2
+					: (Math.pow(2, -20 * x + 10) * Math.sin((20 * x - 11.125) * c5)) / 2 + 1
+	},
+	easeInBounce: (x: number) => 1 - easings.easeOutBounce(1 - x),
+	easeOutBounce: (x: number) => {
+		const n1 = 7.5625
+		const d1 = 2.75
+		if (x < 1 / d1) {
+			return n1 * x * x
+		} else if (x < 2 / d1) {
+			return n1 * (x -= 1.5 / d1) * x + 0.75
+		} else if (x < 2.5 / d1) {
+			return n1 * (x -= 2.25 / d1) * x + 0.9375
+		} else {
+			return n1 * (x -= 2.625 / d1) * x + 0.984375
+		}
+	},
+	easeInOutBounce: (x: number) => {
+		return x < 0.5
+			? (1 - easings.easeOutBounce(1 - 2 * x)) / 2
+			: (1 + easings.easeOutBounce(2 * x - 1)) / 2
+	},
+}
+
+export type Timer = {
+	update: (dt: number) => void,
+	done: boolean,
+}
+
+export function tween<V extends LerpValue>(
+	from: V,
+	to: V,
+	duration: number,
+	setValue: (value: V) => void,
+	easeFunc = easings.linear,
+) {
+	let curTime = 0
+	const onEndEvents: Array<() => void> = []
+	let done = false
+	let paused = false
+	function update(dt: number) {
+		if (done || paused) return
+		curTime += dt
+		const t = Math.min(curTime / duration, 1)
+		setValue(lerpEx(from, to, easeFunc(t)))
+		if (t === 1) {
+			finish()
+		}
+	}
+	function onEnd(action: () => void) {
+		onEndEvents.push(action)
+	}
+	function cancel() {
+		done = true
+	}
+	function finish() {
+		done = true
+		setValue(to)
+		onEndEvents.forEach((action) => action())
+	}
+	return {
+		update,
+		onEnd,
+		then: onEnd,
+		cancel,
+		finish,
+		get paused() {
+			return paused
+		},
+		set paused(p) {
+			paused = p
+		},
+		get done() {
+			return done
+		},
+	}
+}
+
+export function wait(t: number, action?: () => void) {
+	let curTime = 0
+	const onEndEvents: Array<() => void> = []
+	if (action) {
+		onEndEvents.push(action)
+	}
+	let done = false
+	let paused = false
+	function update(dt: number) {
+		curTime += dt
+		if (curTime >= t) {
+			curTime = 0
+			finish()
+		}
+	}
+	function onEnd(action: () => void) {
+		onEndEvents.push(action)
+	}
+	function cancel() {
+		done = true
+	}
+	function finish() {
+		done = true
+		onEndEvents.forEach((action) => action())
+	}
+	return {
+		update,
+		onEnd,
+		then: onEnd,
+		cancel,
+		finish,
+		get paused() {
+			return paused
+		},
+		set paused(p) {
+			paused = p
+		},
+		get done() {
+			return done
+		},
+	}
 }

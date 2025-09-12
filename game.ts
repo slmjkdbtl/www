@@ -14,6 +14,9 @@ import {
 	rad2deg,
 	evaluateBezier,
 	vec2,
+	tween,
+	wait,
+	Timer,
 } from "./math"
 
 import {
@@ -1478,6 +1481,17 @@ function alignPt(align: TextAlign): number {
 	}
 }
 
+export async function loadMap<T>(entries: Record<string, Promise<T>>): Promise<Record<string, T>> {
+	return await Promise.all(Object.entries(entries).map(([k, v]) => v.then(val => [k, val] as const)))
+		.then((d) => {
+			const bucket: Record<string, T> = {}
+			for (const [name, data] of d) {
+				bucket[name] = data
+			}
+			return bucket
+		})
+}
+
 export type AssetsEntries = {
 	sprites: Record<string, Promise<Sprite>>,
 }
@@ -1487,36 +1501,18 @@ export type Assets = {
 	sprites: Record<string, Sprite>,
 }
 
-export type AssetBucket<T> = {
-	loaded: boolean,
-	bucket: Record<string, T>,
-}
-
-export function loadBucket<T>(entries: Record<string, Promise<T>>): AssetBucket<T> {
-	let loaded = false
-	const bucket: Record<string, T> = {}
-	Promise.all(Object.entries(entries).map(([k, v]) => v.then(val => [k, val] as const)))
-		.then((d) => {
-			for (const [name, data] of d) {
-				bucket[name] = data
-			}
-			loaded = true
-		})
+export function loadAssets(entries: AssetsEntries): Assets {
+	let spritesLoaded = false
+	let sprites = {}
+	loadMap<Sprite>(entries.sprites).then((s) => {
+		spritesLoaded = true
+		Object.assign(sprites, s)
+	})
 	return {
 		get loaded() {
-			return loaded
+			return spritesLoaded
 		},
-		bucket: bucket,
-	}
-}
-
-export function load(entries: AssetsEntries): Assets {
-	const sprites = loadBucket<Sprite>(entries.sprites)
-	return {
-		get loaded() {
-			return sprites.loaded
-		},
-		sprites: sprites.bucket,
+		sprites: sprites,
 	}
 }
 
@@ -1687,6 +1683,20 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		resizeObserver.disconnect()
 	}
 
+	let timers: Timer[] = []
+
+	function tween2(...args: Parameters<typeof tween>) {
+		let t = tween(...args)
+		timers.push(t)
+		return t
+	}
+
+	function wait2(...args: Parameters<typeof wait>) {
+		let t = wait(...args)
+		timers.push(t)
+		return t
+	}
+
 	function run(action: () => void) {
 
 		if (app.loopID !== null) {
@@ -1713,19 +1723,28 @@ export function createGame(gopt: CreateGameOpts = {}) {
 			accumulatedDt += realDt
 
 			if (accumulatedDt > desiredDt) {
+
 				if (!app.skipTime) {
 					app.dt = accumulatedDt
 					app.time += dt()
 					app.fpsCounter.tick(app.dt)
 				}
+
 				accumulatedDt = 0
 				app.skipTime = false
 				app.numFrames++
 				processInput()
 				frameStart()
+
+				for (const t of timers) {
+					t.update(app.dt)
+				}
+
+				timers = timers.filter((t) => !t.done)
 				action()
 				frameEnd()
 				resetInput()
+
 			}
 
 			app.loopID = requestAnimationFrame(frame)
@@ -2322,8 +2341,8 @@ export function createGame(gopt: CreateGameOpts = {}) {
 			bgColor: bgColor,
 			bgAlpha: bgAlpha,
 
-			width: gopt.width ?? gl.drawingBufferWidth,
-			height: gopt.height ?? gl.drawingBufferHeight,
+			width: gw,
+			height: gh,
 
 			viewport: {
 				x: 0,
@@ -3083,7 +3102,7 @@ export function createGame(gopt: CreateGameOpts = {}) {
 							gw = q.w * scale.x
 							// omit trailing space
 							curLine = curLine.slice(0, lastSpace - 1)
-							curX = lastSpaceWidth
+							curX = lastSpaceWidth ?? 0
 						}
 						lastSpace = null
 						lastSpaceWidth = null
@@ -3318,11 +3337,6 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		gfx.frameBuffer.unbind()
 		gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight)
 
-		const ow = gfx.width
-		const oh = gfx.height
-		gfx.width = gl.drawingBufferWidth / pd
-		gfx.height = gl.drawingBufferHeight / pd
-
 		drawTexture({
 			flipY: true,
 			tex: gfx.frameBuffer.tex,
@@ -3332,8 +3346,6 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		})
 
 		flush()
-		gfx.width = ow
-		gfx.height = oh
 
 	}
 
@@ -3490,6 +3502,9 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		pushTranslate,
 		pushScale,
 		pushRotate,
+
+		tween: tween2,
+		wait: wait2,
 
 	}
 

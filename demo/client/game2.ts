@@ -10,9 +10,10 @@ import {
 	rgb,
 	hsl2rgb,
 	wave,
+	deg2rad,
 } from "./../../math"
 
-const WIDTH = 640
+const WIDTH = 480
 const HEIGHT = 480
 const SCALE = 1
 const ANIM_FPS = 8
@@ -22,7 +23,7 @@ const g = createGame({
 	height: HEIGHT,
 	// crisp: true,
 	// pixelDensity: 1,
-	background: [255, 255, 255],
+	// background: [255, 255, 255],
 })
 
 g.focus()
@@ -44,6 +45,7 @@ const assets = loadAssets({
 		lilfang: g.loadSpritesAnim(seq("/static/lilfang_noeye-?.png", 3)),
 		eye: g.loadSpritesAnim(seq("/static/lilfang_eye-?.png", 3)),
 		moon: g.loadSpritesAnim(seq("/static/moon-?.png", 3)),
+		bg: g.loadSpritesAnim(seq("/static/bg-?.jpg", 3)),
 	},
 })
 
@@ -91,6 +93,12 @@ function drawLilfang(opts: {
 
 }
 
+let pos = vec2(320, 260)
+let dir = Vec2.fromAngle(45)
+let speed = 100
+let crazy = false
+let angle = 0
+
 g.run(() => {
 
 	if (!assets.loaded) {
@@ -98,20 +106,41 @@ g.run(() => {
 		return
 	}
 
+	g.onKeyPress("space", () => {
+		crazy = !crazy
+		angle = 0
+	})
+
+	const dt = g.dt()
 	const mpos = g.mousePos()
 	const lookat = mpos
+	const w = assets.sprites["lilfang"].width
+	const h = assets.sprites["lilfang"].height
 
-	g.pushTransform()
-	g.pushTranslate(vec2(360, 240))
 	g.drawSprite({
-		sprite: assets.sprites["moon"], frame: framen(3),
-		anchor: "center",
+		sprite: assets.sprites["bg"], frame: Math.floor(g.time() * 0.3 % 3),
+		width: g.width(),
+		height: g.height(),
 	})
-	g.popTransform()
+
+	pos = pos.add(dir.scale(speed * dt * (crazy ? 2 : 1)))
+
+	if (pos.x + w / 2 >= g.width() || pos.x <= w / 2) {
+		dir.x *= -1
+	}
+
+	if (pos.y + h / 2 >= g.height() || pos.y <= h / 2) {
+		dir.y *= -1
+	}
+
+	if (crazy) {
+		angle += 800 * dt
+	}
 
 	drawLilfang({
 		lookat: mpos,
-		pos: vec2(420, 360),
+		pos: pos,
+		angle: angle,
 	})
 
 })

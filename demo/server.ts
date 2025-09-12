@@ -558,7 +558,7 @@ server.use(route("GET", "/game", async ({ req, res, next }) => {
 	return res.sendHTML(page([
 		h("title", {}, "game"),
 	], [
-		h("script", {}, await js("client/game.ts"))
+		h("script", {}, await js("client/game2.ts"))
 	]))
 }))
 
