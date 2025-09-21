@@ -17,6 +17,7 @@ import {
 	vec2,
 	tween,
 	wait,
+	loop,
 	Timer,
 } from "./math"
 
@@ -310,13 +311,13 @@ export type Uniform = Record<UniformKey, UniformValue>
 export const DEF_FILTER: TexFilter = "nearest"
 export const DEF_WRAP: TexWrap = "clampToEdge"
 
-export interface Outline {
+export type Outline = {
 	width: number,
 	color: Color,
 	join: LineJoin,
 }
 
-export interface RenderProps {
+export type RenderProps = {
 	pos?: Vec2,
 	scale?: Vec2 | number,
 	angle?: number,
@@ -347,7 +348,7 @@ export type NineSlice = {
 
 export type LoadSpriteSrc = string | ImageSource
 
-export interface LoadSpriteOpt {
+export type LoadSpriteOpt = {
 	sliceX?: number,
 	sliceY?: number,
 	slice9?: NineSlice,
@@ -355,7 +356,7 @@ export interface LoadSpriteOpt {
 	anims?: SpriteAnims,
 }
 
-export interface LoadSpritesAnimOpt {
+export type LoadSpritesAnimOpt = {
 	anims?: SpriteAnims,
 }
 
@@ -369,6 +370,15 @@ export type SpriteAnim = {
 
 export type SpriteAnims = Record<string, SpriteAnim>
 
+export interface LoadBitmapFontOpt {
+	chars?: string,
+	filter?: TexFilter,
+	outline?: number,
+}
+
+export type SoundData = AudioBuffer
+export type AudioData = HTMLAudioElement
+
 export function loadImg(src: string): Promise<HTMLImageElement> {
 	const img = new Image()
 	img.crossOrigin = "anonymous"
@@ -376,20 +386,6 @@ export function loadImg(src: string): Promise<HTMLImageElement> {
 	return new Promise<HTMLImageElement>((resolve, reject) => {
 		img.onload = () => resolve(img)
 		img.onerror = (e) => reject(e)
-	})
-}
-
-export function loadAudio(src: string): Promise<HTMLAudioElement> {
-	const audio = new Audio()
-	audio.crossOrigin = "anonymous"
-	audio.src = src
-	return new Promise<HTMLAudioElement>((resolve, reject) => {
-		audio.addEventListener("canplaythrough", () => {
-			resolve(audio)
-		})
-		audio.addEventListener("error", (e) => {
-			reject(e)
-		})
 	})
 }
 
@@ -465,7 +461,7 @@ export default class TexPacker {
 }
 
 export type DrawSpriteOpt = RenderProps & {
-	sprite: Sprite,
+	sprite: SpriteData,
 	frame?: number,
 	width?: number,
 	height?: number,
@@ -560,7 +556,7 @@ export type TextAlign =
 	| "left"
 	| "right"
 
-export type BitmapFont = {
+export type BitmapFontData = {
 	tex: Texture,
 	map: Record<string, Quad>,
 	size: number,
@@ -568,7 +564,7 @@ export type BitmapFont = {
 
 export type DrawTextOpt = RenderProps & {
 	text: string,
-	font?: string | Font | BitmapFont,
+	font?: string | Font | BitmapFontData,
 	size?: number,
 	align?: TextAlign,
 	width?: number,
@@ -586,7 +582,7 @@ export type FormattedText = {
 	opt: DrawTextOpt,
 }
 
-export interface FormattedChar {
+export type FormattedChar = {
 	ch: string,
 	tex: Texture,
 	width: number,
@@ -601,7 +597,7 @@ export interface FormattedChar {
 
 export type CharTransformFunc = (idx: number, ch: string) => CharTransform
 
-export interface CharTransform {
+export type CharTransform = {
 	pos?: Vec2,
 	scale?: Vec2 | number,
 	angle?: number,
@@ -614,7 +610,7 @@ export type SpriteFrame = {
 	quad: Quad,
 }
 
-export class Sprite {
+export class SpriteData {
 	frames: SpriteFrame[]
 	anims: SpriteAnims
 	width: number
@@ -1049,6 +1045,25 @@ export type VertexFormat = {
 	size: number,
 }[]
 
+export type AudioPlayOpt = {
+	paused?: boolean,
+	loop?: boolean,
+	volume?: number,
+	speed?: number,
+	detune?: number,
+	seek?: number,
+}
+
+export type SoundPlayOpt = {
+	volume?: number,
+	speed?: number,
+	detune?: number,
+}
+
+export type SoundPlayback = {
+	then(action: () => void): EventController,
+}
+
 export class BatchRenderer {
 
 	ctx: GLCtx
@@ -1342,48 +1357,89 @@ export async function loadMap<T>(entries: Record<string, Promise<T>>): Promise<R
 }
 
 export type AssetsEntries = {
-	sprites: Record<string, Promise<Sprite>>,
-	audio: Record<string, Promise<HTMLAudioElement>>,
+	sprites?: Record<string, Promise<SpriteData>>,
+	audio?: Record<string, Promise<AudioData>>,
+	sounds?: Record<string, Promise<SoundData>>,
+	fonts?: Record<string, Promise<BitmapFontData>>,
+	text?: Record<string, Promise<string>>,
 }
 
 export type Assets = {
 	ready: boolean,
-	sprites: Record<string, Sprite>,
-	audio: Record<string, HTMLAudioElement>,
+	sprites: Record<string, SpriteData>,
+	audio: Record<string, AudioData>,
+	sounds: Record<string, SoundData>,
+	fonts: Record<string, BitmapFontData>,
+	text: Record<string, string>,
 	onReady: (action: () => void) => void,
 	then: (action: () => void) => void,
 }
 
 // TODO: progress
+// TODO: kinda ugly
 export function loadAssets(entries: AssetsEntries): Assets {
 
-	const onReadyEvents: Array<() => void> = []
+	const onReadyEvent = new Event()
 	let spritesLoaded = false
 	let audioLoaded = false
-	let sprites: Record<string, Sprite> = {}
-	let audio: Record<string, HTMLAudioElement> = {}
+	let soundsLoaded = false
+	let fontsLoaded = false
+	let textLoaded = false
+	let sprites: Record<string, SpriteData> = {}
+	let audio: Record<string, AudioData> = {}
+	let sounds: Record<string, SoundData> = {}
+	let fonts: Record<string, BitmapFontData> = {}
+	let text: Record<string, string> = {}
 
 	function isReady() {
-		return spritesLoaded && audioLoaded
+		return spritesLoaded
+			&& audioLoaded
+			&& soundsLoaded
+			&& fontsLoaded
+			&& textLoaded
 	}
 
 	function onReady(action: () => void) {
-		onReadyEvents.push(action)
+		onReadyEvent.add(action)
 	}
 
-	loadMap<Sprite>(entries.sprites).then((s) => {
+	loadMap<SpriteData>(entries.sprites ?? {}).then((s) => {
 		spritesLoaded = true
 		Object.assign(sprites, s)
 		if (isReady()) {
-			onReadyEvents.forEach((action) => action())
+			onReadyEvent.trigger()
 		}
 	})
 
-	loadMap<HTMLAudioElement>(entries.audio).then((s) => {
+	loadMap<AudioData>(entries.audio ?? {}).then((s) => {
 		audioLoaded = true
 		Object.assign(audio, s)
 		if (isReady()) {
-			onReadyEvents.forEach((action) => action())
+			onReadyEvent.trigger()
+		}
+	})
+
+	loadMap<SoundData>(entries.sounds ?? {}).then((s) => {
+		soundsLoaded = true
+		Object.assign(sounds, s)
+		if (isReady()) {
+			onReadyEvent.trigger()
+		}
+	})
+
+	loadMap<BitmapFontData>(entries.fonts ?? {}).then((s) => {
+		fontsLoaded = true
+		Object.assign(fonts, s)
+		if (isReady()) {
+			onReadyEvent.trigger()
+		}
+	})
+
+	loadMap<string>(entries.text ?? {}).then((s) => {
+		textLoaded = true
+		Object.assign(text, s)
+		if (isReady()) {
+			onReadyEvent.trigger()
 		}
 	})
 
@@ -1393,6 +1449,9 @@ export function loadAssets(entries: AssetsEntries): Assets {
 		},
 		sprites: sprites,
 		audio: audio,
+		fonts: fonts,
+		text: text,
+		sounds: sounds,
 		onReady: onReady,
 		then: onReady,
 	}
@@ -1508,6 +1567,10 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		canvas.focus()
 	}
 
+	function isFocused(): boolean {
+		return document.activeElement === app.canvas
+	}
+
 	function isHidden() {
 		return app.isHidden
 	}
@@ -1587,6 +1650,12 @@ export function createGame(gopt: CreateGameOpts = {}) {
 
 	function wait2(...args: Parameters<typeof wait>) {
 		let t = wait(...args)
+		timers.push(t)
+		return t
+	}
+
+	function loop2(...args: Parameters<typeof loop>) {
+		let t = loop(...args)
 		timers.push(t)
 		return t
 	}
@@ -2848,7 +2917,7 @@ export function createGame(gopt: CreateGameOpts = {}) {
 	}
 
 	type FontAtlas = {
-		font: BitmapFont,
+		font: BitmapFontData,
 		cursor: Vec2,
 		outline: Outline | null,
 	}
@@ -3262,7 +3331,7 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		return frames
 	}
 
-	async function loadSprite(src: string, opt: LoadSpriteOpt = {}): Promise<Sprite> {
+	async function loadSprite(src: string, opt: LoadSpriteOpt = {}): Promise<SpriteData> {
 		const img = await loadImg(src)
 		const [tex, quad] = packer.add(img)
 		const quads = opt.frames ? opt.frames.map((f) => new Quad(
@@ -3277,10 +3346,10 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		}))
 		const w = frames[0].tex.width * frames[0].quad.w
 		const h = frames[0].tex.height * frames[0].quad.h
-		return new Sprite(frames, opt.anims ?? {}, w, h)
+		return new SpriteData(frames, opt.anims ?? {}, w, h)
 	}
 
-	async function loadSpritesAnim(src: string[], opt: LoadSpriteOpt = {}): Promise<Sprite> {
+	async function loadSpritesAnim(src: string[], opt: LoadSpriteOpt = {}): Promise<SpriteData> {
 		const imgs = await Promise.all(src.map((url) => loadImg(url)))
 		const frames = imgs.map((img) => {
 			const [tex, quad] = packer.add(img)
@@ -3291,7 +3360,37 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		})
 		const w = frames[0].tex.width * frames[0].quad.w
 		const h = frames[0].tex.height * frames[0].quad.h
-		return new Sprite(frames, opt.anims ?? {}, w, h)
+		return new SpriteData(frames, opt.anims ?? {}, w, h)
+	}
+
+	async function loadBitmapFont(
+		src: string,
+		gw: number,
+		gh: number,
+		opt: LoadBitmapFontOpt = {},
+	): Promise<BitmapFontData> {
+
+		const img = await loadImg(src)
+		const tex = Texture.fromImage(glCtx, img, opt)
+		const cols = tex.width / gw
+		const map: Record<string, Quad> = {}
+		const charMap = (opt.chars ?? ASCII_CHARS).split("").entries()
+
+		for (const [i, ch] of charMap) {
+			map[ch] = new Quad(
+				(i % cols) * gw,
+				Math.floor(i / cols) * gh,
+				gw,
+				gh,
+			)
+		}
+
+		return {
+			tex: tex,
+			map: map,
+			size: gh,
+		}
+
 	}
 
 	async function loadFont(
@@ -3317,12 +3416,107 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		)
 	}
 
+	function createCanvas(w: number, h: number) {
+		const fb = new FrameBuffer(glCtx, w, h)
+		return {
+			clear: () => fb.clear(),
+			free: () => fb.free(),
+			toDataURL: () => fb.toDataURL(),
+			toImageData: () => fb.toImageData(),
+			width: fb.width,
+			height: fb.height,
+			draw: (action: () => void) => {
+				flush()
+				fb.bind()
+				action()
+				flush()
+				fb.unbind()
+			},
+		}
+	}
+
 	function width() {
 		return gfx.width
 	}
 
 	function height() {
 		return gfx.height
+	}
+
+	const audio = (() => {
+		const ctx = new AudioContext()
+		const masterNode = ctx.createGain()
+		masterNode.connect(ctx.destination)
+		return {
+			ctx,
+			masterNode,
+		}
+	})()
+
+	function loadSound(src: string): Promise<AudioBuffer> {
+		return fetch(src)
+			.then((res) => res.arrayBuffer())
+			.then((buf) => audio.ctx.decodeAudioData(buf))
+	}
+
+	function loadAudio(src: string) {
+		const el = new Audio()
+		el.crossOrigin = "anonymous"
+		el.src = src
+		return new Promise<AudioData>((resolve, reject) => {
+			el.addEventListener("canplaythrough", () => {
+				const srcNode = audio.ctx.createMediaElementSource(el)
+				srcNode.connect(audio.masterNode)
+				resolve(el)
+			})
+			el.addEventListener("error", (e) => {
+				reject(e)
+			})
+		})
+	}
+
+	function playAudio(el: AudioData, opt: AudioPlayOpt = {}) {
+		if (audio.ctx.state === "suspended") {
+			audio.ctx.resume()
+		}
+		el.play()
+	}
+
+	function playSound(snd: SoundData, opt: SoundPlayOpt = {}): SoundPlayback {
+
+		if (audio.ctx.state === "suspended") {
+			audio.ctx.resume()
+		}
+
+		const ctx = audio.ctx
+		const srcNode = ctx.createBufferSource()
+		const gainNode = ctx.createGain()
+		const onEndEvent = new Event()
+
+		srcNode.buffer = snd
+		srcNode.detune.value = opt.detune ?? 0
+		srcNode.playbackRate.value = opt.speed ?? 1
+		srcNode.connect(gainNode)
+		gainNode.gain.value = opt.volume ?? 1
+		gainNode.connect(audio.masterNode)
+		srcNode.start()
+
+		srcNode.onended = () => {
+			onEndEvent.trigger()
+		}
+
+		return {
+			then: (action: () => void) => onEndEvent.add(action),
+		}
+
+	}
+
+	function setVolume(v: number) {
+		audio.masterNode.gain.value = v
+	}
+
+	function getVolume(): number {
+		return audio.masterNode.gain.value
 	}
 
 	return {
@@ -3334,6 +3528,7 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		fps,
 		numFrames,
 		focus,
+		isFocused,
 		quit,
 		isHidden,
 		setFullscreen,
@@ -3376,6 +3571,10 @@ export function createGame(gopt: CreateGameOpts = {}) {
 
 		loadSprite,
 		loadSpritesAnim,
+		loadAudio,
+		loadSound,
+		loadFont,
+		loadBitmapFont,
 		createShader,
 
 		width,
@@ -3398,9 +3597,18 @@ export function createGame(gopt: CreateGameOpts = {}) {
 		pushTranslate,
 		pushScale,
 		pushRotate,
+		createCanvas,
+
+		playAudio,
+		playSound,
+		setVolume,
+		getVolume,
 
 		tween: tween2,
 		wait: wait2,
+		loop: loop2,
+
+		ASCII_CHARS,
 
 	}
 

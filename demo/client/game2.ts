@@ -1,7 +1,6 @@
 import {
 	createGame,
 	loadAssets,
-	loadAudio,
 } from "./../../game"
 
 import {
@@ -11,6 +10,7 @@ import {
 	rgb,
 	hsl,
 	map,
+	mapc,
 	lerp,
 	wave,
 	deg2rad,
@@ -66,18 +66,40 @@ const assets = loadAssets({
 		moon: g.loadSpritesAnim(seq("/static/moon-?.png", 3)),
 		btfly: g.loadSpritesAnim(seq("/static/btfly-?.png", 2)),
 		bg: g.loadSpritesAnim(seq("/static/bg-?.jpg", 9)),
+		// discoball: g.loadSprite("/static/discoball.png"),
 	},
 	audio: {
-		song: loadAudio("/static/song.mp3"),
+		song: g.loadAudio("/static/song.mp3"),
+	},
+	sounds: {
+		horn: g.loadSound("/static/horn.mp3"),
+	},
+	fonts: {
+		["04b03"]: g.loadBitmapFont("/static/04b03_6x8.png", 6, 8),
 	},
 })
 
-const shader = g.createShader(null, `
-uniform float u_time;
-
+const additiveColorShader = g.createShader(null, `
 vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
 	vec4 tc = texture2D(tex, uv);
 	return vec4(tc.r + color.r, tc.g + color.g, tc.b + color.b, tc.a);
+}
+`)
+
+const transitionShader = g.createShader(null, `
+uniform float u_t;
+
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+	vec4 c = def_frag();
+	if (u_t == 1.0) {
+		return c;
+	}
+	float x = pos.x / 2.0 + 0.5;
+	if (x > u_t) {
+		return vec4(0, 0, 0, 0);
+	}
+	float a = smoothstep(u_t, u_t - 0.05, x);
+	return vec4(c.rgb, a);
 }
 `)
 
@@ -119,7 +141,7 @@ function drawLilFang(opt: {
 		sprite: assets.sprites["lilfang"],
 		frame: anim("lilfang"),
 		anchor: "center",
-		shader: shader,
+		shader: additiveColorShader,
 		color: opt.color ?? rgb(0, 0, 0),
 		uniform: {
 			"u_time": g.time(),
@@ -181,6 +203,7 @@ let btflyAngle = 0
 const MAX_BTFLY_POS_HIST = 32
 const MAX_LILFANG_POS_HIST = 48
 const btflyPosHist: Vec2[] = []
+let lastBtflyPos = vec2(0)
 const lilFangPosHist: Vec2[] = []
 
 g.onKeyPress("space", () => {
@@ -189,6 +212,10 @@ g.onKeyPress("space", () => {
 
 g.onKeyPress("c", () => {
 	crazy = !crazy
+})
+
+g.onKeyPress("h", () => {
+	g.playSound(assets.sounds["horn"])
 })
 
 let popCursor = 0
@@ -210,18 +237,24 @@ const popSoundsTime = [
 	130.15,
 	130.4,
 	130.5,
-	130.85,
+	130.75,
 	182.55,
 	182.65,
 ]
 
-let songStarted = false
-let songTimer = 0
+let curBg = 0
+let bgTimer = 0
+const BG_TIME = 7
+const BG_TRANSITION = 1
 
 assets.onReady(() => {
 	g.onKeyPress("p", () => {
-		songStarted = true
-		assets.audio["song"].play()
+		const song = assets.audio["song"]
+		if (song.paused) {
+			g.playAudio(song)
+		} else {
+			song.pause()
+		}
 	})
 })
 
@@ -232,30 +265,58 @@ g.run(() => {
 		return
 	}
 
+	const song = assets.audio["song"]
+
 	const dt = g.dt()
 	const mpos = g.mousePos()
 	const lookat = mpos
 	const w = assets.sprites["lilfang"].width * 1.6
 	const h = assets.sprites["lilfang"].height * 1.6
 
-	if (songStarted) {
-		songTimer += dt
-		const nextPop = popSoundsTime[popCursor]
-		if (songTimer >= nextPop) {
-			talking += 1
-			g.wait(0.15, () => {
-				talking -= 1
-			})
-			popCursor += 1
-		}
+	const nextPop = popSoundsTime[popCursor]
+
+	if (song.currentTime >= nextPop) {
+		talking += 1
+		g.wait(0.15, () => {
+			talking -= 1
+		})
+		popCursor += 1
 	}
 
-	// TODO: cross fade
+	const bgSprite = assets.sprites["bg"]
+	bgTimer += dt
+
+	if (bgTimer >= BG_TIME) {
+		curBg = (curBg + 1) % bgSprite.frames.length
+		bgTimer = 0
+	}
+
+	// TODO: ppt transition effects
 	g.drawSprite({
-		sprite: assets.sprites["bg"], frame: Math.floor(g.time() * 0.3 % assets.sprites["bg"].frames.length),
+		sprite: bgSprite, frame: (curBg + 1) % bgSprite.frames.length,
 		width: g.width(),
 		height: g.height(),
 	})
+
+	g.drawSprite({
+		sprite: bgSprite, frame: curBg,
+		width: g.width(),
+		height: g.height(),
+		opacity: bgTimer >= BG_TIME - BG_TRANSITION ? mapc(bgTimer, BG_TIME - BG_TRANSITION, BG_TIME, 1, 0) : 1,
+		// shader: transitionShader,
+		// uniform: {
+			// "u_t": bgTimer >= BG_TIME - BG_TRANSITION ? mapc(bgTimer, BG_TIME - BG_TRANSITION, BG_TIME, 1, 0) : 1,
+			// "u_t": mpos.x / g.width(),
+		// },
+	})
+
+	// g.drawSprite({
+		// sprite: assets.sprites["discoball"],
+		// anchor: "center",
+		// pos: vec2(g.width() / 2, 100),
+		// flipX: Math.floor(g.time() * 2) % 2 === 0,
+		// flipY: Math.floor(g.time() * 2) % 2 + 1 === 0,
+	// })
 
 	if (crazy) {
 		g.drawRect({
@@ -266,8 +327,15 @@ g.run(() => {
 		})
 	}
 
-	lilFangPosHist.push(shake(pos, 16))
-	lilFangPosHist.splice(0, lilFangPosHist.length - MAX_LILFANG_POS_HIST)
+	if (crazy) {
+		lilFangPosHist.push(shake(pos, 16))
+		if (lilFangPosHist.length > MAX_LILFANG_POS_HIST) {
+			lilFangPosHist.shift()
+		}
+	} else {
+		lilFangPosHist.shift()
+	}
+
 	pos = pos.add(dir.scale(speed * dt * (crazy ? 2 : 1)))
 
 	if (pos.x + w / 2 >= g.width() || pos.x <= w / 2) {
@@ -284,7 +352,7 @@ g.run(() => {
 
 	drawLilFang({
 		crazy: crazy,
-		lookat: mpos,
+		lookat: btflyPos,
 		pos: crazy ? pos.add(vec2(rand(-d, d), rand(-d, d))) : pos,
 		angle: angle,
 		talking: talking > 0,
@@ -292,32 +360,35 @@ g.run(() => {
 		// color: pickerColor,
 	})
 
-	// for (let i = 0; i < btflyPosHist.length - 2; i++) {
-		// g.drawLine({
-			// p1: btflyPosHist[i],
-			// p2: btflyPosHist[i + 1],
-			// width: 2,
-			// opacity: map(i, 0, MAX_BTFLY_POS_HIST, 0, 0.5),
-			// color: rgb(255, 255, 255),
-		// })
-	// }
+	for (let i = 0; i < btflyPosHist.length - 2; i++) {
+		g.drawLine({
+			p1: btflyPosHist[i],
+			p2: btflyPosHist[i + 1],
+			width: 2,
+			opacity: map(i, 0, MAX_BTFLY_POS_HIST, 0, 0.5),
+			color: rgb(255, 255, 255),
+		})
+	}
 
+	lastBtflyPos = btflyPos.clone()
 	btflyPos = btflyPos.lerp(mpos, dt * 4)
 	btflyPosHist.push(btflyPos)
 	btflyPosHist.splice(0, btflyPosHist.length - MAX_BTFLY_POS_HIST)
 
-	if (btflyPosHist.length >= 2) {
-		const p1 = btflyPosHist[btflyPosHist.length - 1]
-		const p2 = btflyPosHist[btflyPosHist.length - 2]
-		// btflyAngle = lerp(btflyAngle, p1.angle(p2), dt * 16)
-		btflyAngle = p1.angle(p2)
-	}
+	btflyAngle = btflyPos.angle(lastBtflyPos)
 
 	g.drawSprite({
 		pos: crazy ? shake(btflyPos) : btflyPos,
 		angle: btflyAngle + 90,
 		sprite: assets.sprites["btfly"], frame: anim("btfly"),
 		anchor: "center",
+	})
+
+	g.drawText({
+		text: `${song.currentTime}`,
+		font: assets.fonts["04b03"],
+		size: 16,
+		pos: vec2(16),
 	})
 
 })

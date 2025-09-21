@@ -1407,3 +1407,33 @@ export function wait(t: number, action?: () => void) {
 		},
 	}
 }
+
+export function loop(t: number, action: () => void) {
+	let cancelled = false
+	const newAction = () => {
+		if (cancelled) return
+		action()
+		curTimer = wait(t, newAction)
+	}
+	action()
+	let curTimer = wait(t, newAction)
+	function cancel() {
+		curTimer.cancel()
+		cancelled = true
+	}
+	return {
+		update: (dt: number) => {
+			curTimer.update(dt)
+		},
+		cancel,
+		get paused() {
+			return curTimer.paused
+		},
+		set paused(p) {
+			curTimer.paused = p
+		},
+		get done() {
+			return cancelled
+		},
+	}
+}
