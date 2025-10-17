@@ -2,7 +2,7 @@ import {
 	SpriteData,
 	createGame,
 	loadAssets,
-} from "./../../game"
+} from "www/game"
 
 import {
 	Vec2,
@@ -10,7 +10,7 @@ import {
 	rgb,
 	hsl,
 	wave,
-} from "./../../math"
+} from "www/math"
 
 const WIDTH = 640
 const HEIGHT = 480

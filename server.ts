@@ -550,10 +550,14 @@ export function filebrowser(route = "", root = ""): Handler {
 			}
 		}
 		async function defaultFile(p: string) {
-			if (await isFile(path.join(p, "index.html"))) {
-				return "#index.html"
-			} else if (await isFile(path.join(p, "README.txt"))) {
-				return "#README.txt"
+			const files = [
+				"index.html",
+				"README",
+			]
+			for (const file of files) {
+				if (await isFile(path.join(p, file))) {
+					return `#${file}`
+				}
 			}
 			return ""
 		}
@@ -742,11 +746,12 @@ async function toIdx(i) {
     return res
   }
 
+  console.log(ty)
   if (ty.startsWith("text/html")) {
     const iframe = document.createElement("iframe")
     iframe.src = url
     content.append(iframe)
-  } else if (ty.startsWith("text/")) {
+  } else if (ty.startsWith("text/") || ty.includes("charset=utf-8")) {
     const res = await fetchContent()
     const p = document.createElement("p")
     p.textContent = await res.text()

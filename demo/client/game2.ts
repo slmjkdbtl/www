@@ -1,7 +1,7 @@
 import {
 	createGame,
 	loadAssets,
-} from "./../../game"
+} from "www/game"
 
 import {
 	Vec2,
@@ -16,7 +16,7 @@ import {
 	deg2rad,
 	rand,
 	easings,
-} from "./../../math"
+} from "www/math"
 
 const WIDTH = 480
 const HEIGHT = 480

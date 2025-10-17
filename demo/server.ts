@@ -11,7 +11,21 @@ import {
 	rateLimiter,
 	logger,
 	Req,
-} from "./../server"
+} from "www/server"
+
+import {
+	css,
+	csslib,
+	h,
+	js,
+	jsData,
+} from "www/html"
+
+import {
+	isDev,
+	randAlphaNum,
+	cron,
+} from "www/utils"
 
 import {
 	db,
@@ -22,20 +36,6 @@ import {
 	postImgTable,
 	chatTable,
 } from "./db"
-
-import {
-	css,
-	csslib,
-	h,
-	js,
-	jsData,
-} from "./../html"
-
-import {
-	isDev,
-	randAlphaNum,
-	cron,
-} from "./../utils"
 
 import * as crypto from "crypto"
 
