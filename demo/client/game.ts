@@ -1,5 +1,5 @@
 import {
-	Sprite,
+	SpriteData,
 	createGame,
 	loadAssets,
 } from "./../../game"
@@ -8,7 +8,7 @@ import {
 	Vec2,
 	vec2,
 	rgb,
-	hsl2rgb,
+	hsl,
 	wave,
 } from "./../../math"
 
@@ -93,7 +93,7 @@ function drawLilfang(opts: {
 
 g.run(() => {
 
-	if (!assets.loaded) {
+	if (!assets.ready) {
 		// TODO
 		return
 	}

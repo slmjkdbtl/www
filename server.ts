@@ -9,7 +9,6 @@ import * as path from "node:path"
 
 import type {
 	ServeOptions,
-	WebSocketServeOptions,
 	SocketAddress,
 	ServerWebSocket,
 	ServerWebSocketSendStatus,
@@ -124,12 +123,8 @@ export type ServerUpgradeOpts<T = undefined> = {
 	data?: T,
 }
 
-export type WebSocketData = {
-	id: string,
-}
-
 // TODO: support arbituary data
-export type WebSocket = ServerWebSocket<WebSocketData>
+export type WebSocket = ServerWebSocket
 
 // TODO: can pass a full Response
 export class HTTPError extends Error {
@@ -149,20 +144,14 @@ export function createServer(opts: ServerOpts = {}): Server {
 		open: new Event<WebSocket>(),
 		close: new Event<WebSocket>(),
 	}
-	const websocket: WebSocketHandler<WebSocketData> = {
+	const websocket: WebSocketHandler<undefined> = {
 		message: (ws, msg) => {
 			wsEvents.message.trigger([ws, msg])
 		},
 		open: (ws) => {
-			const id = crypto.randomUUID()
-			wsClients.set(id, ws)
-			ws.data = {
-				id: id,
-			}
 			wsEvents.open.trigger(ws)
 		},
 		close: (ws) => {
-			wsClients.delete(ws.data.id)
 			wsEvents.close.trigger(ws)
 		},
 	}
@@ -257,33 +246,34 @@ export function createServer(opts: ServerOpts = {}): Server {
 				if (file.size === 0) {
 					throw new HTTPError(404, "not found")
 				}
+				const range = bunReq.headers.get("Range")
+				if (range) {
+					let [start, end] = range
+						.replace("bytes=", "")
+						.split("-")
+						.map((x) => parseInt(x, 10))
+					if (isNaN(start)) start = 0
+					if (isNaN(end)) end = file.size - 1
+					if (
+						start < 0 || start >= file.size ||
+						end < 0 || end >= file.size ||
+						start > end
+					) {
+						throw new HTTPError(416, "invalid range")
+					}
+					headers.set("Content-Range", `bytes ${start}-${end}/${file.size}`)
+					headers.set("Content-Length", "" + (end - start + 1))
+					headers.set("Accept-Ranges", "bytes")
+					return send(file.slice(start, end + 1), {
+						...opt,
+						status: 206,
+					})
+				}
 				const mtimeServer = req.headers.get("If-Modified-Since")
 				const mtimeClient = toHTTPDate(new Date(file.lastModified))
 				if (mtimeServer === mtimeClient) {
 					return send(null, { status: 304 })
 				}
-				// TODO: stream not working
-				// https://github.com/oven-sh/bun/blob/main/examples/http-file-extended.ts
-				// const range = bunReq.headers.get("Range")
-				// if (range) {
-					// let [start, end] = range
-						// .replace("bytes=", "")
-						// .split("-")
-						// .map(parseInt)
-					// start = start || 0
-					// end = end || file.size - 1
-					// if (start >= file.size || end >= file.size) {
-						// headers.set("Content-Range", `bytes */${file.size}`)
-						// return send(null, { status: 416 })
-					// }
-					// headers.set("Content-Range", `bytes ${start}-${end}/${file.size}`)
-					// headers.set("Content-Length", "" + (end - start + 1))
-					// headers.set("Accept-Ranges", "bytes")
-					// return send(file.slice(start, end), {
-						// ...opt,
-						// status: 206,
-					// })
-				// }
 				headers.set("Last-Modified", mtimeClient)
 				headers.set("Cache-Control", "no-cache")
 				return send(file, opt)
@@ -319,7 +309,7 @@ export function createServer(opts: ServerOpts = {}): Server {
 					res,
 					next,
 					upgrade: (opts) => {
-						const success = bunServer.upgrade(bunReq, opts)
+						const success = bunServer.upgrade(bunReq)
 						// @ts-ignore
 						if (success) resolve()
 						return success
@@ -541,25 +531,31 @@ export function filebrowser(route = "", root = ""): Handler {
 			.sort((a, b) => path.extname(a) > path.extname(b) ? 1 : -1)
 		const files = []
 		const dirs = []
-		for (const entry of entries) {
-			const p = path.join(diskPath, entry)
-			if (await isDir(p)) {
-				dirs.push(entry)
-			} else if (await isFile(p)) {
-				if (entry.startsWith("README") || entry === "index.html") {
+		for (const name of entries) {
+			const p = path.join(diskPath, name)
+			const file = Bun.file(p)
+			const stat = await file.stat()
+			if (stat.isDirectory()) {
+				dirs.push(name)
+			} else if (stat.isFile()) {
+				const entry = {
+					name: name,
+					mime: file.type,
+				}
+				if (name.startsWith("README") || name === "index.html") {
 					files.unshift(entry)
 				} else {
 					files.push(entry)
 				}
 			}
 		}
-		async function resolveDefFile(p: string) {
+		async function defaultFile(p: string) {
 			if (await isFile(path.join(p, "index.html"))) {
-				return p + "#index.html"
+				return "#index.html"
 			} else if (await isFile(path.join(p, "README.txt"))) {
-				return p + "#README.txt"
+				return "#README.txt"
 			}
-			return p
+			return ""
 		}
 		return res.sendHTML("<!DOCTYPE html>" + h("html", { lang: "en" }, [
 			h("head", {}, [
@@ -651,13 +647,21 @@ export function filebrowser(route = "", root = ""): Handler {
 			h("body", {}, [
 				h("ul", { id: "tree", class: "box", tabindex: 0 }, [
 					...(isRoot ? [] : [
-						h("a", { href: `/${await resolveDefFile(path.dirname(diskPath))}`, }, ".."),
+						h("a", {
+							href: `/${path.dirname(urlPath)}${await defaultFile(path.dirname(diskPath))}`,
+						}, ".."),
 					]),
 					...await mapAsync(dirs, async (d: string) => h("li", {}, [
-						h("a", { href: `/${await resolveDefFile(`${diskPath}/${d}`)}`, }, d + "/"),
+						h("a", {
+							href: `/${urlPath}/${d}${await defaultFile(`${diskPath}/${d}`)}`,
+						}, d + "/"),
 					])),
-					...files.map((file) => h("li", {}, [
-						h("a", { href: `#${file}`, class: "entry" }, file),
+					...files.map(({ name, mime }) => h("li", {}, [
+						h("a", {
+							href: `#${name}`,
+							class: "entry",
+							"data-type": mime,
+						}, name),
 					])),
 				]),
 				h("div", { id: "content", class: "box" }, []),
@@ -719,33 +723,31 @@ async function toIdx(i) {
   }
 
   const file = entry.textContent
+  const url = "/" + "${urlPath}" + "/" + encodeURIComponent(file)
 
   document.title = "${urlPath}" + "/" + file
-
-  const anim = setInterval(() => {
-    let c = content.textContent.length
-    c = (c + 1) % 4
-    content.textContent = ".".repeat(c)
-  }, 100)
-
-  const url = "/" + "${diskPath}" + "/" + encodeURIComponent(file)
-  const res = await fetch(url)
-
-  clearInterval(anim)
   content.innerHTML = ""
 
-  if (!res.ok) {
-    content.textContent = "file not found"
-    return
-  }
+  const ty = entry.getAttribute("data-type")
 
-  const ty = res.headers.get("Content-Type")
+  const fetchContent = async () => {
+    const anim = setInterval(() => {
+      let c = content.textContent.length
+      c = (c + 1) % 4
+      content.textContent = ".".repeat(c)
+    }, 100)
+    const res = await fetch(url)
+    content.innerHTML = ""
+    clearInterval(anim)
+    return res
+  }
 
   if (ty.startsWith("text/html")) {
     const iframe = document.createElement("iframe")
     iframe.src = url
     content.append(iframe)
   } else if (ty.startsWith("text/")) {
+    const res = await fetchContent()
     const p = document.createElement("p")
     p.textContent = await res.text()
     content.append(p)
