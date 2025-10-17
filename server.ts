@@ -6,15 +6,6 @@ if (typeof Bun === "undefined") {
 
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
-
-import type {
-	ServeOptions,
-	SocketAddress,
-	ServerWebSocket,
-	ServerWebSocketSendStatus,
-	WebSocketHandler,
-} from "bun"
-
 import * as sqlite from "bun:sqlite"
 
 import {
@@ -28,14 +19,6 @@ import {
 	mapAsync,
 	isPromise,
 } from "./utils"
-
-import type {
-	Table,
-} from "./db"
-
-import {
-	createDatabase,
-} from "./db"
 
 import {
 	h,
@@ -78,18 +61,14 @@ export type SendFileOpt = ResOpt & {
 	mimes?: Record<string, string>,
 }
 
-export type ServerCtx = {
+export type Ctx = {
 	req: Req,
 	res: Res,
-	next: () => void,
-	upgrade: (opts?: ServerUpgradeOpts) => boolean,
-	onFinish: (action: () => void) => void,
-	onError: (action: (e: Error) => void) => void,
 }
 
-export type Handler = (ctx: ServerCtx) => void | Promise<void>
-export type ErrorHandler = (ctx: ServerCtx, err: Error) => void
-export type NotFoundHandler = (ctx: ServerCtx) => void
+export type Handler = (ctx: Ctx, next: () => Promise<void>) => void | Promise<void>
+export type ErrorHandler = (ctx: Ctx, err: Error) => void
+export type NotFoundHandler = (ctx: Ctx) => void
 
 export type Server = {
 	use: (handler: Handler) => void,
@@ -99,17 +78,6 @@ export type Server = {
 	hostname: string | undefined,
 	url: URL,
 	port: number | undefined,
-	ws: {
-		clients: Map<string, WebSocket>,
-		onMessage: (action: (ws: WebSocket, msg: string | Buffer) => void) => EventController,
-		onOpen: (action: (ws: WebSocket) => void) => EventController,
-		onClose: (action: (ws: WebSocket) => void) => EventController,
-		publish: (
-			topic: string,
-			data: string | DataView | ArrayBuffer | SharedArrayBuffer,
-			compress?: boolean,
-		) => ServerWebSocketSendStatus,
-	},
 }
 
 export type ServerOpts = {
@@ -117,14 +85,6 @@ export type ServerOpts = {
 	port?: number,
 	idleTimeout?: number,
 }
-
-export type ServerUpgradeOpts<T = undefined> = {
-	headers?: HeadersInit,
-	data?: T,
-}
-
-// TODO: support arbituary data
-export type WebSocket = ServerWebSocket
 
 // TODO: can pass a full Response
 export class HTTPError extends Error {
@@ -136,223 +96,11 @@ export class HTTPError extends Error {
 	}
 }
 
-export function createServer(opts: ServerOpts = {}): Server {
-
-	const wsClients = new Map<string, WebSocket>()
-	const wsEvents = {
-		message: new Event<[WebSocket, string | Buffer]>(),
-		open: new Event<WebSocket>(),
-		close: new Event<WebSocket>(),
-	}
-	const websocket: WebSocketHandler<undefined> = {
-		message: (ws, msg) => {
-			wsEvents.message.trigger([ws, msg])
-		},
-		open: (ws) => {
-			wsEvents.open.trigger(ws)
-		},
-		close: (ws) => {
-			wsEvents.close.trigger(ws)
-		},
-	}
-
-	// TODO: make all next() await so middlewares like logger are easier
-	async function fetch(bunReq: Request): Promise<Response> {
-		return new Promise((resolve) => {
-			let done = false
-			const req: Req = {
-				method: bunReq.method,
-				url: new URL(bunReq.url),
-				headers: bunReq.headers,
-				params: {},
-				text: bunReq.text.bind(bunReq),
-				json: bunReq.json.bind(bunReq),
-				arrayBuffer: bunReq.arrayBuffer.bind(bunReq),
-				formData: bunReq.formData.bind(bunReq),
-				blob: bunReq.blob.bind(bunReq),
-				getIP: () => {
-					let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
-						?? bunServer.requestIP(bunReq)?.address
-					if (!ip) return null
-					const ipv6Prefix = "::ffff:"
-					// ipv4 in ipv6
-					if (ip?.startsWith(ipv6Prefix)) {
-						ip = ip.substring(ipv6Prefix.length)
-					}
-					const localhostIPs = new Set([
-						"127.0.0.1",
-						"::1",
-					])
-					if (localhostIPs.has(ip)) return null
-					return ip
-				},
-				getCookies: () => {
-					const str = bunReq.headers.get("Cookie")
-					if (!str) return {}
-					const cookies: Record<string, string> = {}
-					for (const c of str.split(";")) {
-						const [k, v] = c.split("=")
-						cookies[k.trim()] = v.trim()
-					}
-					return cookies
-				},
-			}
-
-			const onFinishEvents: Array<() => void> = []
-			const onErrorEvents: Array<(e: Error) => void> = []
-			let headers = new Headers()
-			let status = 200
-			let body: null | BodyInit = null
-
-			function send(b?: BodyInit | null, opt: ResOpt = {}) {
-				if (done) return
-				body = b ?? body
-				status = opt.status ?? status
-				if (opt.headers) {
-					for (const k in opt.headers) {
-						headers.set(k, opt.headers[k])
-					}
-				}
-				const bunRes = new Response(body, {
-					headers: headers,
-					status: status,
-				})
-				if (bunReq.method.toUpperCase() === "HEAD") {
-					// TODO
-				}
-				resolve(bunRes)
-				done = true
-				onFinishEvents.forEach((f) => f())
-			}
-
-			function sendText(content: string, opt: ResOpt = {}) {
-				headers.set("Content-Type", "text/plain; charset=utf-8")
-				send(content, opt)
-			}
-
-			function sendHTML(content: string, opt: ResOpt = {}) {
-				headers.set("Content-Type", "text/html; charset=utf-8")
-				send(content, opt)
-			}
-
-			function sendJSON(content: unknown, opt: ResOpt = {}) {
-				headers.set("Content-Type", "application/json; charset=utf-8")
-				send(JSON.stringify(content), opt)
-			}
-
-			function sendFile(p: string, opt: SendFileOpt = {}) {
-				const file = Bun.file(p)
-				// TODO: use file.exists()
-				if (file.size === 0) {
-					throw new HTTPError(404, "not found")
-				}
-				const range = bunReq.headers.get("Range")
-				if (range) {
-					let [start, end] = range
-						.replace("bytes=", "")
-						.split("-")
-						.map((x) => parseInt(x, 10))
-					if (isNaN(start)) start = 0
-					if (isNaN(end)) end = file.size - 1
-					if (
-						start < 0 || start >= file.size ||
-						end < 0 || end >= file.size ||
-						start > end
-					) {
-						throw new HTTPError(416, "invalid range")
-					}
-					headers.set("Content-Range", `bytes ${start}-${end}/${file.size}`)
-					headers.set("Content-Length", "" + (end - start + 1))
-					headers.set("Accept-Ranges", "bytes")
-					return send(file.slice(start, end + 1), {
-						...opt,
-						status: 206,
-					})
-				}
-				const mtimeServer = req.headers.get("If-Modified-Since")
-				const mtimeClient = toHTTPDate(new Date(file.lastModified))
-				if (mtimeServer === mtimeClient) {
-					return send(null, { status: 304 })
-				}
-				headers.set("Last-Modified", mtimeClient)
-				headers.set("Cache-Control", "no-cache")
-				return send(file, opt)
-			}
-
-			function redirect(url: string, s: number = 302) {
-				headers.set("Location", url)
-				status = s
-				send(null)
-			}
-
-			const res: Res = {
-				get status() { return status },
-				set status(s) { status = s },
-				get body() { return body },
-				set body(b) { body = b },
-				headers,
-				send,
-				sendText,
-				sendHTML,
-				sendJSON,
-				sendFile,
-				redirect,
-			}
-
-			const curHandlers = [...handlers]
-
-			function next() {
-				if (done) return
-				const h = curHandlers.shift()
-				const ctx: ServerCtx = {
-					req,
-					res,
-					next,
-					upgrade: (opts) => {
-						const success = bunServer.upgrade(bunReq)
-						// @ts-ignore
-						if (success) resolve()
-						return success
-					},
-					onFinish(action) {
-						onFinishEvents.push(action)
-					},
-					onError(action) {
-						onErrorEvents.push(action)
-					},
-				}
-				if (h) {
-					try {
-						const res = h(ctx)
-						if (isPromise(res)) {
-							res.catch((e) => {
-								errHandler(ctx, e)
-								onErrorEvents.forEach((f) => f(e))
-							})
-						}
-					} catch (e) {
-						errHandler(ctx, e as Error)
-						onErrorEvents.forEach((f) => f(e as Error))
-					}
-				} else {
-					notFoundHandler(ctx)
-				}
-			}
-			next()
-		})
-	}
-
-	const bunServer = Bun.serve({
-		port: opts.port,
-		hostname: opts.hostname ?? "::",
-		websocket,
-		fetch,
-		development: isDev,
-	})
+export function createServer(opts: ServerOpts = {}) {
 
 	const handlers: Handler[] = []
-	const use = (handler: Handler) => handlers.push(handler)
-	let errHandler: ErrorHandler = ({ req, res, next }, err) => {
+
+	let errHandler: ErrorHandler = ({ req, res }, err: Error) => {
 		console.error(err)
 		if (err instanceof HTTPError) {
 			res.status = err.code
@@ -362,10 +110,186 @@ export function createServer(opts: ServerOpts = {}): Server {
 			res.sendText("500 internal server error")
 		}
 	}
+
 	let notFoundHandler: NotFoundHandler = ({ res }) => {
 		res.status = 404
 		res.sendText("404 not found")
 	}
+
+	function use(handler: Handler) {
+		handlers.push(handler)
+	}
+
+	async function fetch(bunReq: Request) {
+
+		const req: Req = {
+			method: bunReq.method,
+			url: new URL(bunReq.url),
+			headers: bunReq.headers,
+			params: {},
+			text: bunReq.text.bind(bunReq),
+			json: bunReq.json.bind(bunReq),
+			arrayBuffer: bunReq.arrayBuffer.bind(bunReq),
+			formData: bunReq.formData.bind(bunReq),
+			blob: bunReq.blob.bind(bunReq),
+			getIP: () => {
+				let ip = bunReq.headers.get("X-Forwarded-For")?.split(",")[0].trim()
+					?? bunServer.requestIP(bunReq)?.address
+				if (!ip) return null
+				const ipv6Prefix = "::ffff:"
+				// ipv4 in ipv6
+				if (ip?.startsWith(ipv6Prefix)) {
+					ip = ip.substring(ipv6Prefix.length)
+				}
+				const localhostIPs = new Set([
+					"127.0.0.1",
+					"::1",
+				])
+				if (localhostIPs.has(ip)) return null
+				return ip
+			},
+			getCookies: () => {
+				const str = bunReq.headers.get("Cookie")
+				if (!str) return {}
+				const cookies: Record<string, string> = {}
+				for (const c of str.split(";")) {
+					const [k, v] = c.split("=")
+					cookies[k.trim()] = v.trim()
+				}
+				return cookies
+			},
+		}
+
+		let headers = new Headers()
+		let status = 200
+		let body: null | BodyInit = null
+		let bunRes = null
+
+		// TODO: clean up response handling
+		function send(b?: BodyInit | null, opt: ResOpt = {}) {
+			body = b ?? body
+			status = opt.status ?? status
+			if (opt.headers) {
+				for (const k in opt.headers) {
+					headers.set(k, opt.headers[k])
+				}
+			}
+			bunRes = new Response(body, {
+				headers: headers,
+				status: status,
+			})
+			if (bunReq.method.toUpperCase() === "HEAD") {
+				// TODO
+			}
+		}
+
+		function sendText(content: string, opt: ResOpt = {}) {
+			headers.set("Content-Type", "text/plain; charset=utf-8")
+			send(content, opt)
+		}
+
+		function sendHTML(content: string, opt: ResOpt = {}) {
+			headers.set("Content-Type", "text/html; charset=utf-8")
+			send(content, opt)
+		}
+
+		function sendJSON(content: unknown, opt: ResOpt = {}) {
+			headers.set("Content-Type", "application/json; charset=utf-8")
+			send(JSON.stringify(content), opt)
+		}
+
+		async function sendFile(p: string, opt: SendFileOpt = {}) {
+			const file = Bun.file(p)
+			if (!await file.exists()) {
+				throw new HTTPError(404, "not found")
+			}
+			const range = bunReq.headers.get("Range")
+			if (range) {
+				let [start, end] = range
+					.replace("bytes=", "")
+					.split("-")
+					.map((x) => parseInt(x, 10))
+				if (isNaN(start)) start = 0
+				if (isNaN(end)) end = file.size - 1
+				if (
+					start < 0 || start >= file.size ||
+					end < 0 || end >= file.size ||
+					start > end
+				) {
+					throw new HTTPError(416, "invalid range")
+				}
+				headers.set("Content-Range", `bytes ${start}-${end}/${file.size}`)
+				headers.set("Content-Length", "" + (end - start + 1))
+				headers.set("Accept-Ranges", "bytes")
+				return send(file.slice(start, end + 1), {
+					...opt,
+					status: 206,
+				})
+			}
+			const mtimeServer = req.headers.get("If-Modified-Since")
+			const mtimeClient = toHTTPDate(new Date(file.lastModified))
+			if (mtimeServer === mtimeClient) {
+				return send(null, { status: 304 })
+			}
+			headers.set("Last-Modified", mtimeClient)
+			headers.set("Cache-Control", "no-cache")
+			return send(file, opt)
+		}
+
+		function redirect(url: string, s: number = 302) {
+			headers.set("Location", url)
+			status = s
+			send(null)
+		}
+
+		const res: Res = {
+			get status() { return status },
+			set status(s) { status = s },
+			get body() { return body },
+			set body(b) { body = b },
+			headers,
+			send,
+			sendText,
+			sendHTML,
+			sendJSON,
+			sendFile,
+			redirect,
+		}
+
+		const ctx = { res, req }
+		let idx = -1
+
+		async function dispatch(i: number) {
+			if (i <= idx) throw new Error("next() called multiple times")
+			idx = i
+			const fn = handlers[i]
+			if (!fn) return
+			try {
+				await fn(ctx, () => dispatch(i + 1))
+			} catch (e) {
+				errHandler(ctx, e as Error)
+			}
+		}
+
+		await dispatch(0)
+
+		if (!bunRes) {
+			notFoundHandler(ctx)
+			if (!bunRes) {
+				throw new Error("not found handler should create response")
+			}
+		}
+
+		return bunRes
+
+	}
+
+	const bunServer = Bun.serve({
+		port: opts.port,
+		hostname: opts.hostname ?? "::",
+		fetch,
+		development: isDev,
+	})
 
 	return {
 		use: use,
@@ -375,14 +299,8 @@ export function createServer(opts: ServerOpts = {}): Server {
 		hostname: bunServer.hostname,
 		url: bunServer.url,
 		port: bunServer.port,
-		ws: {
-			clients: wsClients,
-			onMessage: (action) => wsEvents.message.add(([ws, msg]) => action(ws, msg)),
-			onOpen: (action) => wsEvents.open.add(action),
-			onClose: (action) => wsEvents.close.add(action),
-			publish: bunServer.publish.bind(bunServer),
-		},
 	}
+
 }
 
 export function matchPath(pat: string, url: string): Record<string, string> | null {
@@ -445,8 +363,8 @@ export function createRouter(): Router {
 		})
 	}
 	function mount(prefix: string = ""): Handler {
-		return (ctx) => {
-			const { req, res, next } = ctx
+		return async (ctx, next) => {
+			const { req, res } = ctx
 			const method = req.method.toUpperCase()
 			for (const route of routes) {
 				if (
@@ -458,10 +376,10 @@ export function createRouter(): Router {
 				const match = matchPath(prefix + route.path, decodeURI(req.url.pathname))
 				if (match) {
 					ctx.req.params = match
-					return route.handler(ctx)
+					return await route.handler(ctx, next)
 				}
 			}
-			next()
+			await next()
 		}
 	}
 	return {
@@ -479,14 +397,14 @@ export const route = (method: HTTPMethod, path: string, handler: Handler) => {
 const trimSlashes = (str: string) => str.replace(/\/*$/, "").replace(/^\/*/, "")
 
 export function files(route = "", root = ""): Handler {
-	return ({ req, res, next }) => {
+	return async ({ req, res }, next) => {
 		route = trimSlashes(route)
 		const pathname = trimSlashes(decodeURI(req.url.pathname))
-		if (!pathname.startsWith(route)) return next()
+		if (!pathname.startsWith(route)) return await next()
 		const baseDir = "./" + trimSlashes(root)
 		const relativeURLPath = pathname.replace(new RegExp(`^${route}/?`), "")
 		const p = path.join(baseDir, relativeURLPath)
-		return res.sendFile(p)
+		return await res.sendFile(p)
 	}
 }
 
@@ -517,14 +435,14 @@ export async function dataurl(path: string) {
 export function filebrowser(route = "", root = ""): Handler {
 	route = trimSlashes(route)
 	root = trimSlashes(root)
-	return async ({ req, res, next }) => {
+	return async ({ req, res }, next) => {
 		const urlPath = trimSlashes(decodeURIComponent(req.url.pathname))
-		if (!urlPath.startsWith(route)) return next()
+		if (!urlPath.startsWith(route)) return await next()
 		const relativeURLPath = urlPath.replace(new RegExp(`^${route}/?`), "")
 		const isRoot = relativeURLPath === ""
 		const diskPath = path.join("./" + root, relativeURLPath)
-		if (await isFile(diskPath)) return res.sendFile(diskPath)
-		if (!await isDir(diskPath)) return next()
+		if (await isFile(diskPath)) return await res.sendFile(diskPath)
+		if (!await isDir(diskPath)) return await next()
 		const entries = (await fs.readdir(diskPath))
 			.filter((entry) => !entry.startsWith("."))
 			.sort((a, b) => a > b ? -1 : 1)
@@ -746,7 +664,6 @@ async function toIdx(i) {
     return res
   }
 
-  console.log(ty)
   if (ty.startsWith("text/html")) {
     const iframe = document.createElement("iframe")
     iframe.src = url
@@ -823,39 +740,8 @@ export type RateLimiterOpts = {
 	handler: Handler,
 }
 
-export function rateLimiter(opts: RateLimiterOpts): Handler {
-	const reqCounter: Record<string, number> = {}
-	return (ctx) => {
-		const ip = ctx.req.getIP()
-		if (!ip) return ctx.next()
-		if (!(ip in reqCounter)) {
-			reqCounter[ip] = 0
-		}
-		reqCounter[ip] += 1
-		setTimeout(() => {
-			reqCounter[ip] -= 1
-			if (reqCounter[ip] === 0) {
-				delete reqCounter[ip]
-			}
-		}, opts.time * 1000)
-		if (reqCounter[ip] > opts.limit) {
-			ctx.res.status = 429
-			return opts.handler(ctx)
-		}
-		return ctx.next()
-	}
-}
-
 export function toHTTPDate(d: Date) {
 	return d.toUTCString()
-}
-
-export type LoggerOpts = {
-	filter?: (req: Req, res: Res) => boolean,
-	db?: string,
-	file?: string,
-	stdout?: boolean,
-	stderr?: boolean,
 }
 
 // TODO: is there a way to get bun calculated Content-Length result?
@@ -883,93 +769,36 @@ export function getBodySize(body: BodyInit) {
 	return 0
 }
 
-// TODO: can there be a onStart() to record time
-export async function logger(opts: LoggerOpts = {}): Promise<Handler> {
-	let reqTable: Table | null = null
-	if (opts.db) {
-		const db = await createDatabase(opts.db)
-		reqTable = db.table("request", {
-			"id":     { type: "INTEGER", primaryKey: true, autoIncrement: true },
-			"method": { type: "TEXT" },
-			"path":   { type: "TEXT" },
-			"params": { type: "TEXT" },
-			"ip":     { type: "TEXT", allowNull: true },
-			"err":    { type: "TEXT", allowNull: true },
-		}, {
-			timeCreated: true,
-		})
-	}
-	return ({ req, res, next, onFinish, onError }) => {
-		if (opts.filter) {
-			if (!opts.filter(req, res)) {
-				return next()
-			}
-		}
-		const genMsg = (msgOpts: {
-			color?: boolean,
-		} = {}) => {
-			const a = mapValues(ansi, (v) => {
-				if (msgOpts.color) {
-					return v
-				} else {
-					if (typeof v === "string") {
-						return ""
-					} else if (typeof v === "function") {
-						return () => ""
-					}
-					return v
-				}
-			})
-			const endTime = new Date()
-			const msg = []
-			const year = endTime.getUTCFullYear().toString().padStart(4, "0")
-			const month = (endTime.getUTCMonth() + 1).toString().padStart(2, "0")
-			const date = endTime.getUTCDate().toString().padStart(2, "0")
-			const hour = endTime.getUTCHours().toString().padStart(2, "0")
-			const minute = endTime.getUTCMinutes().toString().padStart(2, "0")
-			const seconds = endTime.getUTCSeconds().toString().padStart(2, "0")
-			// TODO: why this turns dim red for 4xx and 5xx responses?
-			msg.push(`${a.dim}[${year}-${month}-${date} ${hour}:${minute}:${seconds}]${a.reset}`)
-			const statusClor = {
-				"1": a.yellow,
-				"2": a.green,
-				"3": a.blue,
-				"4": a.red,
-				"5": a.red,
-			}[res.status.toString()[0]] ?? a.yellow
-			msg.push(`${a.bold}${statusClor}${res.status}${a.reset}`)
-			msg.push(req.method)
-			msg.push(req.url.pathname)
-			msg.push(`${a.dim}${endTime.getTime() - startTime.getTime()}ms${a.reset}`)
-			const size = res.body ? getBodySize(res.body) : 0
-			if (size) {
-				msg.push(`${a.dim}${fmtBytes(size)}${a.reset}`)
-			}
-			return msg.join(" ")
-		}
+export function logger(): Handler {
+	return async ({ req, res }, next) => {
 		const startTime = new Date()
-		onFinish(async () => {
-			if (opts.stdout !== false) {
-				console.log(genMsg({ color: true }))
-			}
-			if (opts.file) {
-				fs.appendFile(opts.file, genMsg({ color: false }) + "\n", "utf8")
-			}
-			if (reqTable) {
-				reqTable.insert({
-					"method": req.method,
-					"path": req.url.pathname,
-					"params": req.url.search,
-					"ip": req.getIP(),
-				})
-			}
-		})
-		onError((e) => {
-			if (reqTable) {
-				// TODO
-			}
-		})
-		return next()
+		await next()
+		const endTime = new Date()
+		const msg = []
+		const year = endTime.getUTCFullYear().toString().padStart(4, "0")
+		const month = (endTime.getUTCMonth() + 1).toString().padStart(2, "0")
+		const date = endTime.getUTCDate().toString().padStart(2, "0")
+		const hour = endTime.getUTCHours().toString().padStart(2, "0")
+		const minute = endTime.getUTCMinutes().toString().padStart(2, "0")
+		const seconds = endTime.getUTCSeconds().toString().padStart(2, "0")
+		// TODO: why this turns dim red for 4xx and 5xx responses?
+		msg.push(`${ansi.dim}[${year}-${month}-${date} ${hour}:${minute}:${seconds}]${ansi.reset}`)
+		const statusClor = {
+			"1": ansi.yellow,
+			"2": ansi.green,
+			"3": ansi.blue,
+			"4": ansi.red,
+			"5": ansi.red,
+		}[res.status.toString()[0]] ?? ansi.yellow
+		msg.push(`${ansi.bold}${statusClor}${res.status}${ansi.reset}`)
+		msg.push(req.method)
+		msg.push(req.url.pathname)
+		msg.push(`${ansi.dim}${endTime.getTime() - startTime.getTime()}ms${ansi.reset}`)
+		const size = res.body ? getBodySize(res.body) : 0
+		if (size) {
+			msg.push(`${ansi.dim}${fmtBytes(size)}${ansi.reset}`)
+		}
+		console.log(msg.join(" "))
 	}
 }
 

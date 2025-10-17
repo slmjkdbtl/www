@@ -8,7 +8,8 @@ import {
 	getFormBlob,
 	getFormText,
 	kvList,
-	rateLimiter,
+	HTTPError,
+	// rateLimiter,
 	logger,
 	Req,
 } from "www/server"
@@ -178,19 +179,7 @@ const form = (opts: FormOpts) => {
 	])
 }
 
-server.use(await logger({
-	file: "data/log.txt",
-	db: "data/log.db",
-}))
-
-server.use(rateLimiter({
-	time: 1,
-	limit: 100,
-	handler: ({ req, res, next }) => {
-		return res.send("too many requests")
-	},
-}))
-
+server.use(logger())
 server.use(files("/static", "static"))
 
 server.use(route("GET", "/", async ({ req, res }) => {
@@ -317,7 +306,7 @@ server.use(route("GET", "/", async ({ req, res }) => {
 	}
 }))
 
-server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
+server.use(route("GET", "/delete-post/:id", async ({ req, res }) => {
 	const session = getSession(req)
 	if (!session)
 		return res.sendHTML(errPage("please log in first"), { status: 401 })
@@ -347,10 +336,10 @@ server.use(route("GET", "/delete-post/:id", async ({ req, res, next }) => {
 	return res.redirect("/")
 }))
 
-server.use(route("GET", "/blob/:id", async ({ req, res, next }) => {
+server.use(route("GET", "/blob/:id", async ({ req, res }, next) => {
 	const id = req.params["id"]
 	const img = blobTable.find({ "id": id })
-	if (!img) return next()
+	if (!img) return await next()
 	return res.send(new Blob([img.data], { type: img.type }))
 }))
 
@@ -370,7 +359,7 @@ function getSession(req: Req) {
 	}
 }
 
-server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
+server.use(route("POST", "/form/signup", async ({ req, res }) => {
 	const form = await req.formData()
 	const name = getFormText(form, "name")
 	if (!name)
@@ -423,7 +412,7 @@ server.use(route("POST", "/form/signup", async ({ req, res, next }) => {
 	})
 }))
 
-server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
+server.use(route("POST", "/form/settings", async ({ req, res }) => {
 	const session = getSession(req)
 	if (!session)
 		return res.sendHTML(errPage("please log in first"), { status: 401 })
@@ -457,7 +446,7 @@ server.use(route("POST", "/form/settings", async ({ req, res, next }) => {
 	return res.redirect("/")
 }))
 
-server.use(route("GET", "/settings", async ({ req, res, next }) => {
+server.use(route("GET", "/settings", async ({ req, res }) => {
 	const session = getSession(req)
 	if (!session)
 		return res.sendHTML(errPage("please log in first"), { status: 401 })
@@ -479,7 +468,7 @@ server.use(route("GET", "/settings", async ({ req, res, next }) => {
 	]))
 }))
 
-server.use(route("GET", "/logout", async ({ req, res, next }) => {
+server.use(route("GET", "/logout", async ({ req, res }) => {
 	const session = getSession(req)
 	if (session) {
 		sessionTable.delete({ id: session.id })
@@ -487,7 +476,7 @@ server.use(route("GET", "/logout", async ({ req, res, next }) => {
 	res.redirect("/")
 }))
 
-server.use(route("POST", "/form/login", async ({ req, res, next }) => {
+server.use(route("POST", "/form/login", async ({ req, res }) => {
 	const session = getSession(req)
 	if (session)
 		return res.sendHTML(errPage("please log out first"), { status: 400 })
@@ -523,7 +512,7 @@ server.use(route("POST", "/form/login", async ({ req, res, next }) => {
 	})
 }))
 
-server.use(route("POST", "/form/post", async ({ req, res, next }) => {
+server.use(route("POST", "/form/post", async ({ req, res }) => {
 	const session = getSession(req)
 	if (!session)
 		return res.sendHTML(errPage("please log in first"), { status: 401 })
@@ -554,7 +543,7 @@ server.use(route("POST", "/form/post", async ({ req, res, next }) => {
 	return res.redirect("/")
 }))
 
-server.use(route("GET", "/game", async ({ req, res, next }) => {
+server.use(route("GET", "/game", async ({ req, res }) => {
 	return res.sendHTML(page([
 		h("title", {}, "game"),
 	], [
@@ -563,30 +552,13 @@ server.use(route("GET", "/game", async ({ req, res, next }) => {
 }))
 
 // TODO: why req.url.protocol isn't ws?
-server.use(route("GET", "/ws", ({ req, res, upgrade, next }) => {
-	const success = upgrade()
-	if (!success) {
-		return res.sendText("failed to start web socket", { status: 500 })
-	}
-	next()
-}))
-
-server.ws.onMessage((ws, msg) => {
-	const data = JSON.parse(msg as string)
-	// TODO: use pub sub instead of broadcast
-	// server.ws.broadcast(JSON.stringify({
-		// type: "MESSAGE",
-		// user: ws.data.id,
-		// msg: data.msg,
-	// }))
-})
-
-server.ws.onOpen((ws) => {
-	ws.send(JSON.stringify({
-		type: "CONNECT",
-		id: ws.data.id,
-	}))
-})
+// server.use(route("GET", "/ws", ({ req, res, upgrade }) => {
+	// const success = upgrade()
+	// if (!success) {
+		// return res.sendText("failed to start web socket", { status: 500 })
+	// }
+	// next()
+// }))
 
 server.use(filebrowser("/dir", "."))
 
